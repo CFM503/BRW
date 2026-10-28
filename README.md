@@ -1,6 +1,8 @@
-# 中国燃气 - Oracle EBS 专属工作台
+# 中国燃气 - Oracle EBS 专属工作台 (v1.0.1)
 
-专门针对中国燃气 Oracle EBS 业务定制的极简、轻量专用浏览器。
+[![Release](https://img.shields.io/github/v/release/CFM503/BRW?include_prereleases&style=flat-square)](https://github.com/CFM503/BRW/releases)
+
+专门针对中国燃气 Oracle EBS 业务定制的极简、轻量专用浏览器。单个独立 exe 运行，无多余依赖。
 
 ---
 

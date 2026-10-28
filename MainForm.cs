@@ -149,7 +149,7 @@ namespace EBSBrowser
             lblZoom.BorderSides = ToolStripStatusLabelBorderSides.Left;
             lblZoom.Padding = new Padding(8, 0, 8, 0);
 
-            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (兼容 Java 6 JRE)");
+            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (兼容 Java 6 JRE) | v1.0.1");
             lblArch.BorderSides = ToolStripStatusLabelBorderSides.Left;
             lblArch.ForeColor = Color.FromArgb(40, 110, 40);
             lblArch.Padding = new Padding(8, 0, 8, 0);

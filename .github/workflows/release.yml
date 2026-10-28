@@ -1,0 +1,49 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Compile EBSBrowser (Single-file x86)
+        shell: powershell
+        run: |
+          $csc = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+          Write-Host "Compiling with $csc ..."
+          & $csc /target:winexe /platform:x86 /win32manifest:app.manifest /win32icon:app.ico /out:EBSBrowser.exe *.cs
+          if (-not (Test-Path "EBSBrowser.exe")) {
+            throw "Compilation failed, EBSBrowser.exe not found!"
+          }
+          $ver = (Get-Item EBSBrowser.exe).VersionInfo
+          Write-Host "Compiled successfully: Version $($ver.ProductVersion)"
+
+      - name: Create Release Archive
+        shell: powershell
+        run: |
+          Compress-Archive -Path EBSBrowser.exe, config.ini, README.md, CreateShortcut.bat -DestinationPath EBSBrowser-Windows-x86.zip -Force
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            EBSBrowser.exe
+            EBSBrowser-Windows-x86.zip
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
