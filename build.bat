@@ -12,7 +12,7 @@ if not exist "%CSC%" (
     exit /b 1
 )
 
-"%CSC%" /target:winexe /platform:x86 /win32manifest:app.manifest /win32icon:app.ico /out:EBSBrowser.exe *.cs
+"%CSC%" /target:winexe /platform:x86 /r:System.Security.dll /win32manifest:app.manifest /win32icon:app.ico /out:EBSBrowser.exe *.cs
 
 if %ERRORLEVEL% equ 0 (
     echo.

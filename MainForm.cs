@@ -174,7 +174,7 @@ namespace EBSBrowser
             lblKeepAlive.ToolTipText = "点击可立即手动触发一次保活检测并查看状态";
             lblKeepAlive.Click += delegate { SendKeepAlive(); };
 
-            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (多页签) | v1.0.4");
+            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (多页签) | v1.0.5");
             lblArch.BorderSides = ToolStripStatusLabelBorderSides.Left;
             lblArch.ForeColor = Color.FromArgb(40, 110, 40);
             lblArch.Padding = new Padding(8, 0, 8, 0);
@@ -211,7 +211,7 @@ namespace EBSBrowser
 
             // Initialize Keep-Alive timer
             keepAliveTimer = new Timer();
-            keepAliveTimer.Interval = 180000; // 3 minutes interval
+            keepAliveTimer.Interval = Math.Max(1, config.KeepAliveMinutes) * 60 * 1000;
             keepAliveTimer.Tick += KeepAliveTimer_Tick;
             keepAliveTimer.Start();
         }
@@ -256,6 +256,9 @@ namespace EBSBrowser
                 {
                     b.SetZoom(currentZoom);
                 }
+
+                // Attempt auto-filling saved login credentials
+                TryAutoFillCredentials(b);
             };
 
             b.DocumentTitleChanged += delegate(object s, EventArgs args)
@@ -532,7 +535,66 @@ namespace EBSBrowser
                     config = ConfigManager.Load();
                     this.Text = config.AppTitle;
                     SetZoom(config.DefaultZoom);
+                    keepAliveTimer.Interval = Math.Max(1, config.KeepAliveMinutes) * 60 * 1000;
+
+                    // If credentials were just saved, attempt auto-fill on active browser
+                    ExtendedWebBrowser cur = GetCurrentBrowser();
+                    if (cur != null)
+                    {
+                        TryAutoFillCredentials(cur);
+                    }
                 }
+            }
+        }
+
+        private void TryAutoFillCredentials(ExtendedWebBrowser targetBrowser)
+        {
+            try
+            {
+                if (!config.AutoFillLogin) return;
+                if (string.IsNullOrEmpty(config.SavedUsername) || string.IsNullOrEmpty(config.SavedPasswordCipher)) return;
+                if (targetBrowser == null || targetBrowser.Document == null || targetBrowser.Url == null) return;
+
+                string url = targetBrowser.Url.ToString().ToLower();
+                if (url.IndexOf("portal.chinagasholdings.com", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    url.IndexOf("login", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    url.IndexOf("frontend", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    string plainPassword = CredentialManager.DecryptPassword(config.SavedPasswordCipher);
+                    if (string.IsNullOrEmpty(plainPassword)) return;
+
+                    string safeUser = config.SavedUsername.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\"", "\\\"");
+                    string safePwd = plainPassword.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\"", "\\\"");
+
+                    string script = "(function(){" +
+                        "try{" +
+                        "  var user = '" + safeUser + "';" +
+                        "  var pwd = '" + safePwd + "';" +
+                        "  var pwdInputs = document.querySelectorAll('input[type=\"password\"]');" +
+                        "  if(pwdInputs.length > 0){" +
+                        "    var pwdInp = pwdInputs[0];" +
+                        "    var form = pwdInp.form || document;" +
+                        "    var txtInputs = form.querySelectorAll('input[type=\"text\"], input:not([type])');" +
+                        "    for(var i=0; i<txtInputs.length; i++){" +
+                        "      var inp = txtInputs[i];" +
+                        "      if(inp.offsetParent !== null && !inp.readOnly && !inp.disabled){" +
+                        "        inp.value = user;" +
+                        "        var evt1 = document.createEvent('HTMLEvents'); evt1.initEvent('input', true, true); inp.dispatchEvent(evt1);" +
+                        "        var evt2 = document.createEvent('HTMLEvents'); evt2.initEvent('change', true, true); inp.dispatchEvent(evt2);" +
+                        "        break;" +
+                        "      }" +
+                        "    }" +
+                        "    pwdInp.value = pwd;" +
+                        "    var pevt1 = document.createEvent('HTMLEvents'); pevt1.initEvent('input', true, true); pwdInp.dispatchEvent(pevt1);" +
+                        "    var pevt2 = document.createEvent('HTMLEvents'); pevt2.initEvent('change', true, true); pwdInp.dispatchEvent(pevt2);" +
+                        "  }" +
+                        "}catch(e){}" +
+                        "})();";
+                    targetBrowser.Document.InvokeScript("eval", new object[] { script });
+                }
+            }
+            catch
+            {
             }
         }
 
