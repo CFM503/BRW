@@ -7,11 +7,13 @@ namespace EBSBrowser
     public class MainForm : Form
     {
         private AppConfig config;
-        private ExtendedWebBrowser browser;
+        private TabControl tabControl;
+
         private ToolStripButton btnBack;
         private ToolStripButton btnForward;
         private ToolStripButton btnRefresh;
         private ToolStripButton btnHome;
+        private ToolStripButton btnNewTab;
         private ToolStripTextBox txtUrl;
         private ToolStripButton btnGo;
         private ToolStripButton btnZoomOut;
@@ -62,16 +64,16 @@ namespace EBSBrowser
             btnBack = new ToolStripButton("◀ 后退");
             btnBack.ToolTipText = "后退 (Alt+Left)";
             btnBack.Enabled = false;
-            btnBack.Click += delegate { if (browser.CanGoBack) browser.GoBack(); };
+            btnBack.Click += delegate { ExtendedWebBrowser b = GetCurrentBrowser(); if (b != null && b.CanGoBack) b.GoBack(); };
 
             btnForward = new ToolStripButton("▶ 前进");
             btnForward.ToolTipText = "前进 (Alt+Right)";
             btnForward.Enabled = false;
-            btnForward.Click += delegate { if (browser.CanGoForward) browser.GoForward(); };
+            btnForward.Click += delegate { ExtendedWebBrowser b = GetCurrentBrowser(); if (b != null && b.CanGoForward) b.GoForward(); };
 
             btnRefresh = new ToolStripButton("🔄 刷新");
             btnRefresh.ToolTipText = "刷新页面 (F5)";
-            btnRefresh.Click += delegate { browser.Refresh(); };
+            btnRefresh.Click += delegate { ExtendedWebBrowser b = GetCurrentBrowser(); if (b != null) b.Refresh(); };
 
             btnHome = new ToolStripButton("🏠 燃气门户");
             btnHome.ToolTipText = "返回登录门户首页";
@@ -79,11 +81,15 @@ namespace EBSBrowser
             btnHome.ForeColor = Color.FromArgb(0, 91, 172);
             btnHome.Click += delegate { NavigateTo(config.HomeUrl); };
 
+            btnNewTab = new ToolStripButton("➕ 新页签");
+            btnNewTab.ToolTipText = "新建标签页 (Ctrl+T)";
+            btnNewTab.Click += delegate { CreateNewTab("新页签", config.HomeUrl, true); };
+
             ToolStripLabel lblAddress = new ToolStripLabel("地址:");
             lblAddress.ForeColor = Color.FromArgb(100, 116, 139);
 
             txtUrl = new ToolStripTextBox();
-            txtUrl.Size = new Size(500, 26);
+            txtUrl.Size = new Size(420, 26);
             txtUrl.ToolTipText = "输入网址后按回车跳转";
             txtUrl.KeyDown += delegate(object s, KeyEventArgs e)
             {
@@ -109,6 +115,12 @@ namespace EBSBrowser
             btnZoomIn.ToolTipText = "放大页面 (Ctrl+ +)";
             btnZoomIn.Click += delegate { ChangeZoom(10); };
 
+            btnKeepAlive = new ToolStripButton("⚡ 防超时: 开");
+            btnKeepAlive.ToolTipText = "自动在后台刷新会话与防挂机心跳，防止 EBS 登录失效（点击可开启/关闭）";
+            btnKeepAlive.ForeColor = Color.FromArgb(16, 128, 64);
+            btnKeepAlive.Font = new Font(this.Font, FontStyle.Bold);
+            btnKeepAlive.Click += BtnKeepAlive_Click;
+
             btnClearSession = new ToolStripButton("🧹 清理会话");
             btnClearSession.ToolTipText = "重置浏览器会话与Cookie（当EBS登录失效或Token卡住时点击）";
             btnClearSession.Click += BtnClearSession_Click;
@@ -121,17 +133,12 @@ namespace EBSBrowser
             toolStrip.Items.Add(btnForward);
             toolStrip.Items.Add(btnRefresh);
             toolStrip.Items.Add(btnHome);
+            toolStrip.Items.Add(btnNewTab);
             toolStrip.Items.Add(new ToolStripSeparator());
             toolStrip.Items.Add(lblAddress);
             toolStrip.Items.Add(txtUrl);
             toolStrip.Items.Add(btnGo);
             toolStrip.Items.Add(new ToolStripSeparator());
-            btnKeepAlive = new ToolStripButton("⚡ 防超时: 开");
-            btnKeepAlive.ToolTipText = "自动在后台刷新会话与防挂机心跳，防止 EBS 登录失效（点击可开启/关闭）";
-            btnKeepAlive.ForeColor = Color.FromArgb(16, 128, 64);
-            btnKeepAlive.Font = new Font(this.Font, FontStyle.Bold);
-            btnKeepAlive.Click += BtnKeepAlive_Click;
-
             toolStrip.Items.Add(btnZoomOut);
             toolStrip.Items.Add(btnZoomReset);
             toolStrip.Items.Add(btnZoomIn);
@@ -165,7 +172,7 @@ namespace EBSBrowser
             lblKeepAlive.ForeColor = Color.FromArgb(16, 128, 64);
             lblKeepAlive.Padding = new Padding(8, 0, 8, 0);
 
-            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (兼容 Java 6 JRE) | v1.0.2");
+            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (多页签) | v1.0.3");
             lblArch.BorderSides = ToolStripStatusLabelBorderSides.Left;
             lblArch.ForeColor = Color.FromArgb(40, 110, 40);
             lblArch.Padding = new Padding(8, 0, 8, 0);
@@ -175,21 +182,19 @@ namespace EBSBrowser
             statusStrip.Items.Add(lblKeepAlive);
             statusStrip.Items.Add(lblArch);
 
-            // --- Extended Browser Control ---
-            browser = new ExtendedWebBrowser();
-            browser.Dock = DockStyle.Fill;
-            browser.CanGoBackChanged += delegate { btnBack.Enabled = browser.CanGoBack; };
-            browser.CanGoForwardChanged += delegate { btnForward.Enabled = browser.CanGoForward; };
-            browser.Navigated += Browser_Navigated;
-            browser.DocumentCompleted += Browser_DocumentCompleted;
-            browser.DocumentTitleChanged += Browser_DocumentTitleChanged;
-            browser.StatusTextChanged += Browser_StatusTextChanged;
-            browser.ProgressChangeEvent += Browser_ProgressChangeEvent;
-            browser.NewWindow3Event += Browser_NewWindow3Event;
-            browser.NewWindow2Event += Browser_NewWindow2Event;
+            // --- Tab Control ---
+            tabControl = new TabControl();
+            tabControl.Dock = DockStyle.Fill;
+            tabControl.DrawMode = TabDrawMode.OwnerDrawFixed;
+            tabControl.ItemSize = new Size(180, 28);
+            tabControl.SizeMode = TabSizeMode.Fixed;
+            tabControl.Padding = new Point(14, 4);
+            tabControl.DrawItem += TabControl_DrawItem;
+            tabControl.MouseDown += TabControl_MouseDown;
+            tabControl.SelectedIndexChanged += TabControl_SelectedIndexChanged;
 
             // Layout assembly
-            this.Controls.Add(browser);
+            this.Controls.Add(tabControl);
             this.Controls.Add(progressBar);
             this.Controls.Add(toolStrip);
             this.Controls.Add(statusStrip);
@@ -199,13 +204,265 @@ namespace EBSBrowser
 
         private void MainForm_Load(object sender, EventArgs e)
         {
+            // Create first tab
+            CreateNewTab("中国燃气门户", config.HomeUrl, true);
+
+            // Initialize Keep-Alive timer
             keepAliveTimer = new Timer();
             keepAliveTimer.Interval = 180000; // 3 minutes interval
             keepAliveTimer.Tick += KeepAliveTimer_Tick;
             keepAliveTimer.Start();
-
-            NavigateTo(config.HomeUrl);
         }
+
+        #region Tab Management
+
+        public ExtendedWebBrowser GetCurrentBrowser()
+        {
+            if (tabControl.SelectedTab != null && tabControl.SelectedTab.Tag is ExtendedWebBrowser)
+            {
+                return (ExtendedWebBrowser)tabControl.SelectedTab.Tag;
+            }
+            return null;
+        }
+
+        public ExtendedWebBrowser CreateNewTab(string title, string url, bool selectImmediately)
+        {
+            TabPage page = new TabPage(title);
+            ExtendedWebBrowser b = new ExtendedWebBrowser();
+            b.Dock = DockStyle.Fill;
+            page.Tag = b;
+            page.Controls.Add(b);
+
+            // Wire browser events
+            b.Navigated += delegate(object s, WebBrowserNavigatedEventArgs args)
+            {
+                if (tabControl.SelectedTab == page && args.Url != null)
+                {
+                    txtUrl.Text = args.Url.ToString();
+                }
+            };
+
+            b.DocumentCompleted += delegate(object s, WebBrowserDocumentCompletedEventArgs args)
+            {
+                if (tabControl.SelectedTab == page)
+                {
+                    if (b.Url != null) txtUrl.Text = b.Url.ToString();
+                    lblStatus.Text = "完成";
+                    progressBar.Visible = false;
+                }
+                if (currentZoom != 100)
+                {
+                    b.SetZoom(currentZoom);
+                }
+            };
+
+            b.DocumentTitleChanged += delegate(object s, EventArgs args)
+            {
+                string docTitle = b.DocumentTitle;
+                if (!string.IsNullOrEmpty(docTitle))
+                {
+                    // Truncate tab text if too long
+                    string tabText = docTitle.Length > 12 ? docTitle.Substring(0, 12) + ".." : docTitle;
+                    page.Text = tabText;
+                    if (tabControl.SelectedTab == page)
+                    {
+                        this.Text = docTitle + " - " + config.AppTitle;
+                    }
+                }
+            };
+
+            b.StatusTextChanged += delegate(object s, EventArgs args)
+            {
+                if (tabControl.SelectedTab == page)
+                {
+                    lblStatus.Text = b.StatusText ?? "就绪";
+                }
+            };
+
+            b.ProgressChangeEvent += delegate(object s, ProgressChangeEventArgs args)
+            {
+                if (tabControl.SelectedTab == page)
+                {
+                    if (args.ProgressMax > 0 && args.Progress >= 0 && args.Progress <= args.ProgressMax)
+                    {
+                        progressBar.Visible = true;
+                        progressBar.Maximum = args.ProgressMax;
+                        progressBar.Value = args.Progress;
+                        if (args.Progress == args.ProgressMax)
+                        {
+                            progressBar.Visible = false;
+                        }
+                    }
+                    else
+                    {
+                        progressBar.Visible = false;
+                    }
+                }
+            };
+
+            b.CanGoBackChanged += delegate
+            {
+                if (tabControl.SelectedTab == page) btnBack.Enabled = b.CanGoBack;
+            };
+
+            b.CanGoForwardChanged += delegate
+            {
+                if (tabControl.SelectedTab == page) btnForward.Enabled = b.CanGoForward;
+            };
+
+            // Intercept popup windows and turn them into tabs!
+            b.NewWindow3Event += delegate(object s, NewWindow3EventArgs args)
+            {
+                ExtendedWebBrowser newTabBrowser = CreateNewTab("加载中...", null, true);
+                args.PPDisp = newTabBrowser.ActiveXInstance;
+            };
+
+            b.NewWindow2Event += delegate(object s, NewWindow2EventArgs args)
+            {
+                ExtendedWebBrowser newTabBrowser = CreateNewTab("加载中...", null, true);
+                args.PPDisp = newTabBrowser.ActiveXInstance;
+            };
+
+            b.WindowClosingEvent += delegate(object s, WindowClosingEventArgs args)
+            {
+                args.Cancel = false;
+                this.BeginInvoke(new Action(delegate { CloseTab(page, false); }));
+            };
+
+            tabControl.TabPages.Add(page);
+
+            if (selectImmediately)
+            {
+                tabControl.SelectedTab = page;
+            }
+
+            if (!string.IsNullOrEmpty(url))
+            {
+                b.Navigate(url);
+            }
+
+            return b;
+        }
+
+        private void CloseTab(TabPage page, bool promptConfirm)
+        {
+            if (page == null) return;
+
+            ExtendedWebBrowser b = page.Tag as ExtendedWebBrowser;
+            if (promptConfirm && b != null)
+            {
+                string url = (b.Url != null) ? b.Url.ToString() : "";
+                string title = b.DocumentTitle ?? "";
+                if (url.IndexOf("/OA_HTML/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    url.IndexOf("frmservlet", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    title.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    title.IndexOf("EBS", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    DialogResult dr = MessageBox.Show(
+                        "该页签正在运行 Oracle EBS 业务，关闭将导致 Java 表单立即退出！\r\n\r\n确定要关闭此页签吗？",
+                        "安全关闭确认",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning,
+                        MessageBoxDefaultButton.Button2);
+                    if (dr != DialogResult.Yes) return;
+                }
+            }
+
+            if (tabControl.TabPages.Count <= 1)
+            {
+                // If it's the last tab, don't close, reset to Home
+                if (b != null) b.Navigate(config.HomeUrl);
+                page.Text = "中国燃气门户";
+            }
+            else
+            {
+                tabControl.TabPages.Remove(page);
+                if (b != null)
+                {
+                    b.Dispose();
+                }
+            }
+        }
+
+        private void TabControl_DrawItem(object sender, DrawItemEventArgs e)
+        {
+            if (e.Index < 0 || e.Index >= tabControl.TabPages.Count) return;
+
+            TabPage page = tabControl.TabPages[e.Index];
+            Rectangle r = tabControl.GetTabRect(e.Index);
+            bool isSelected = (e.Index == tabControl.SelectedIndex);
+
+            // Tab background
+            using (SolidBrush bgBrush = new SolidBrush(isSelected ? Color.White : Color.FromArgb(241, 245, 249)))
+            {
+                e.Graphics.FillRectangle(bgBrush, r);
+            }
+
+            // Top highlight line for selected tab
+            if (isSelected)
+            {
+                using (Pen topPen = new Pen(Color.FromArgb(0, 91, 172), 3))
+                {
+                    e.Graphics.DrawLine(topPen, r.Left, r.Top + 1, r.Right, r.Top + 1);
+                }
+            }
+
+            // Tab text
+            Rectangle textRect = new Rectangle(r.Left + 8, r.Top + 4, r.Width - 32, r.Height - 6);
+            TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis;
+            Color textColor = isSelected ? Color.FromArgb(15, 23, 42) : Color.FromArgb(100, 116, 139);
+            Font textFont = isSelected ? new Font(this.Font, FontStyle.Bold) : this.Font;
+            TextRenderer.DrawText(e.Graphics, page.Text, textFont, textRect, textColor, flags);
+
+            // Close button [x]
+            Rectangle closeRect = new Rectangle(r.Right - 18, r.Top + (r.Height - 12) / 2, 12, 12);
+            using (Font closeFont = new Font("Arial", 8.5f, FontStyle.Bold))
+            {
+                TextRenderer.DrawText(e.Graphics, "×", closeFont, closeRect, Color.FromArgb(148, 163, 184), TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+        }
+
+        private void TabControl_MouseDown(object sender, MouseEventArgs e)
+        {
+            for (int i = 0; i < tabControl.TabPages.Count; i++)
+            {
+                Rectangle r = tabControl.GetTabRect(i);
+                Rectangle closeRect = new Rectangle(r.Right - 18, r.Top + (r.Height - 12) / 2, 14, 14);
+
+                // Left click on close button
+                if (e.Button == MouseButtons.Left && closeRect.Contains(e.Location))
+                {
+                    CloseTab(tabControl.TabPages[i], true);
+                    return;
+                }
+                // Middle click on tab header
+                if (e.Button == MouseButtons.Middle && r.Contains(e.Location))
+                {
+                    CloseTab(tabControl.TabPages[i], true);
+                    return;
+                }
+            }
+        }
+
+        private void TabControl_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            ExtendedWebBrowser b = GetCurrentBrowser();
+            if (b != null)
+            {
+                txtUrl.Text = (b.Url != null) ? b.Url.ToString() : "";
+                btnBack.Enabled = b.CanGoBack;
+                btnForward.Enabled = b.CanGoForward;
+                lblStatus.Text = b.StatusText ?? "就绪";
+                if (!string.IsNullOrEmpty(b.DocumentTitle))
+                {
+                    this.Text = b.DocumentTitle + " - " + config.AppTitle;
+                }
+            }
+        }
+
+        #endregion
+
+        #region Navigation & Actions
 
         private void NavigateTo(string url)
         {
@@ -217,15 +474,19 @@ namespace EBSBrowser
                 target = "https://" + target;
             }
 
-            try
+            ExtendedWebBrowser b = GetCurrentBrowser();
+            if (b != null)
             {
-                txtUrl.Text = target;
-                lblStatus.Text = "正在加载: " + target;
-                browser.Navigate(target);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("网址跳转失败: " + ex.Message, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                try
+                {
+                    txtUrl.Text = target;
+                    lblStatus.Text = "正在加载: " + target;
+                    b.Navigate(target);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("网址跳转失败: " + ex.Message, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
             }
         }
 
@@ -241,79 +502,13 @@ namespace EBSBrowser
         private void SetZoom(int zoom)
         {
             currentZoom = zoom;
-            browser.SetZoom(zoom);
+            ExtendedWebBrowser b = GetCurrentBrowser();
+            if (b != null)
+            {
+                b.SetZoom(zoom);
+            }
             btnZoomReset.Text = zoom + "%";
             lblZoom.Text = string.Format("缩放: {0}%", zoom);
-        }
-
-        private void Browser_Navigated(object sender, WebBrowserNavigatedEventArgs e)
-        {
-            if (e.Url != null)
-            {
-                txtUrl.Text = e.Url.ToString();
-            }
-        }
-
-        private void Browser_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
-        {
-            if (browser.Url != null)
-            {
-                txtUrl.Text = browser.Url.ToString();
-            }
-            lblStatus.Text = "完成";
-            progressBar.Visible = false;
-
-            // Apply default zoom once document is ready
-            if (currentZoom != 100)
-            {
-                browser.SetZoom(currentZoom);
-            }
-        }
-
-        private void Browser_DocumentTitleChanged(object sender, EventArgs e)
-        {
-            if (!string.IsNullOrEmpty(browser.DocumentTitle))
-            {
-                this.Text = browser.DocumentTitle + " - " + config.AppTitle;
-            }
-        }
-
-        private void Browser_StatusTextChanged(object sender, EventArgs e)
-        {
-            lblStatus.Text = browser.StatusText ?? "就绪";
-        }
-
-        private void Browser_ProgressChangeEvent(object sender, ProgressChangeEventArgs e)
-        {
-            if (e.ProgressMax > 0 && e.Progress >= 0 && e.Progress <= e.ProgressMax)
-            {
-                progressBar.Visible = true;
-                progressBar.Maximum = e.ProgressMax;
-                progressBar.Value = e.Progress;
-                if (e.Progress == e.ProgressMax)
-                {
-                    progressBar.Visible = false;
-                }
-            }
-            else
-            {
-                progressBar.Visible = false;
-            }
-        }
-
-        private void Browser_NewWindow3Event(object sender, NewWindow3EventArgs e)
-        {
-            // Open EBS popup in managed popup window sharing session cookies
-            PopupWindow popup = new PopupWindow();
-            e.PPDisp = popup.Browser.ActiveXInstance;
-            popup.Show();
-        }
-
-        private void Browser_NewWindow2Event(object sender, NewWindow2EventArgs e)
-        {
-            PopupWindow popup = new PopupWindow();
-            e.PPDisp = popup.Browser.ActiveXInstance;
-            popup.Show();
         }
 
         private void BtnClearSession_Click(object sender, EventArgs e)
@@ -339,6 +534,10 @@ namespace EBSBrowser
             }
         }
 
+        #endregion
+
+        #region Keep-Alive Logic
+
         private void KeepAliveTimer_Tick(object sender, EventArgs e)
         {
             if (!isKeepAliveEnabled) return;
@@ -352,14 +551,13 @@ namespace EBSBrowser
                 NativeMethods.PreventSleep();
                 NativeMethods.PulseFormsActivity();
 
-                ExecuteKeepAlivePing(browser);
-
-                foreach (Form f in Application.OpenForms)
+                // Send Keep-Alive ping to all open tab browsers
+                foreach (TabPage page in tabControl.TabPages)
                 {
-                    PopupWindow pw = f as PopupWindow;
-                    if (pw != null && pw.Browser != null)
+                    ExtendedWebBrowser b = page.Tag as ExtendedWebBrowser;
+                    if (b != null)
                     {
-                        ExecuteKeepAlivePing(pw.Browser);
+                        ExecuteKeepAlivePing(b);
                     }
                 }
 
@@ -415,21 +613,41 @@ namespace EBSBrowser
             }
         }
 
+        #endregion
+
+        #region Keyboard Shortcuts
+
         private void MainForm_KeyDown(object sender, KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.F5)
+            if (e.Control && e.KeyCode == Keys.T)
             {
-                browser.Refresh();
+                CreateNewTab("新页签", config.HomeUrl, true);
+                e.Handled = true;
+            }
+            else if (e.Control && e.KeyCode == Keys.W)
+            {
+                if (tabControl.SelectedTab != null)
+                {
+                    CloseTab(tabControl.SelectedTab, true);
+                }
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.F5)
+            {
+                ExtendedWebBrowser b = GetCurrentBrowser();
+                if (b != null) b.Refresh();
                 e.Handled = true;
             }
             else if (e.Alt && e.KeyCode == Keys.Left)
             {
-                if (browser.CanGoBack) browser.GoBack();
+                ExtendedWebBrowser b = GetCurrentBrowser();
+                if (b != null && b.CanGoBack) b.GoBack();
                 e.Handled = true;
             }
             else if (e.Alt && e.KeyCode == Keys.Right)
             {
-                if (browser.CanGoForward) browser.GoForward();
+                ExtendedWebBrowser b = GetCurrentBrowser();
+                if (b != null && b.CanGoForward) b.GoForward();
                 e.Handled = true;
             }
             else if (e.Control && (e.KeyCode == Keys.Oemplus || e.KeyCode == Keys.Add))
@@ -454,5 +672,7 @@ namespace EBSBrowser
                 e.Handled = true;
             }
         }
+
+        #endregion
     }
 }
