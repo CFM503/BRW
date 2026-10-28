@@ -19,9 +19,13 @@ namespace EBSBrowser
 
         public ExtendedWebBrowser()
         {
-            // Do NOT set ScriptErrorsSuppressed = true because that suppresses alert() and confirm() dialogs!
-            // We suppress only script errors via HtmlWindow.Error event.
-            this.ScriptErrorsSuppressed = false;
+            // Suppress standard IE script error dialogs completely
+            this.ScriptErrorsSuppressed = true;
+        }
+
+        protected override WebBrowserSiteBase CreateWebBrowserSiteBase()
+        {
+            return new CustomWebBrowserSite(this);
         }
 
         protected override void CreateSink()
@@ -45,8 +49,6 @@ namespace EBSBrowser
         {
             base.OnDocumentCompleted(e);
 
-            // Hook Error event on the loaded document window to silence script error popups
-            // while preserving window.alert and window.confirm
             try
             {
                 if (this.Document != null && this.Document.Window != null)
@@ -61,7 +63,6 @@ namespace EBSBrowser
 
         private void DocumentWindow_Error(object sender, HtmlElementErrorEventArgs e)
         {
-            // Mark as handled to prevent the annoying "A script error has occurred" IE dialog
             e.Handled = true;
         }
 
@@ -136,6 +137,53 @@ namespace EBSBrowser
                 cancel = args.Cancel;
             }
         }
+
+        #region Custom Site to intercept script errors and retain alerts
+
+        protected class CustomWebBrowserSite : WebBrowserSite, IOleCommandTarget, IDocHostShowUI
+        {
+            private static readonly Guid CGID_DocHostCommandHandler = new Guid("f38bc242-b950-11d1-8918-00c04fc2c836");
+            private const int OLECMDID_SHOWSCRIPTERROR = 40;
+            private const int OLECMDERR_E_UNKNOWNGROUP = -2147221248;
+
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+            private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
+
+            public CustomWebBrowserSite(WebBrowser host) : base(host) { }
+
+            public int QueryStatus(ref Guid pguidCmdGroup, uint cCmds, IntPtr prgCmds, IntPtr pCmdText)
+            {
+                return OLECMDERR_E_UNKNOWNGROUP;
+            }
+
+            public int Exec(ref Guid pguidCmdGroup, uint nCmdID, uint nCmdexecopt, IntPtr pvaIn, IntPtr pvaOut)
+            {
+                if (pguidCmdGroup == CGID_DocHostCommandHandler)
+                {
+                    if (nCmdID == OLECMDID_SHOWSCRIPTERROR)
+                    {
+                        // Return S_OK (0) to tell MSHTML that the script error was handled and suppress the dialog!
+                        return 0;
+                    }
+                }
+                return OLECMDERR_E_UNKNOWNGROUP;
+            }
+
+            public int ShowMessage(IntPtr hwnd, string lpstrText, string lpstrCaption, uint dwType, string lpstrHelpFile, uint dwHelpContext, out int lpResult)
+            {
+                // Preserve genuine webpage alert / confirm dialogs if needed
+                string caption = string.IsNullOrEmpty(lpstrCaption) ? "系统提示" : lpstrCaption;
+                lpResult = MessageBoxW(hwnd, lpstrText, caption, dwType);
+                return 0;
+            }
+
+            public int ShowHelp(IntPtr hwnd, string pszHelpFile, uint uCommand, uint dwData, object ptMouse, object pDispatchObjectHit)
+            {
+                return 0;
+            }
+        }
+
+        #endregion
     }
 
     #region Event Arguments Classes
@@ -209,6 +257,26 @@ namespace EBSBrowser
     #endregion
 
     #region COM Interfaces and Event Sink
+
+    [ComImport, Guid("b722be7f-4eb0-11b0-b59b-0000f805f530"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IOleCommandTarget
+    {
+        [PreserveSig]
+        int QueryStatus([In] ref Guid pguidCmdGroup, [In] uint cCmds, [In, Out] IntPtr prgCmds, [In, Out] IntPtr pCmdText);
+
+        [PreserveSig]
+        int Exec([In] ref Guid pguidCmdGroup, [In] uint nCmdID, [In] uint nCmdexecopt, [In] IntPtr pvaIn, [In, Out] IntPtr pvaOut);
+    }
+
+    [ComImport, Guid("c4d244b0-d43e-11cf-893b-00aa00bdce1a"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IDocHostShowUI
+    {
+        [PreserveSig]
+        int ShowMessage(IntPtr hwnd, [MarshalAs(UnmanagedType.LPWStr)] string lpstrText, [MarshalAs(UnmanagedType.LPWStr)] string lpstrCaption, uint dwType, [MarshalAs(UnmanagedType.LPWStr)] string lpstrHelpFile, uint dwHelpContext, out int lpResult);
+
+        [PreserveSig]
+        int ShowHelp(IntPtr hwnd, [MarshalAs(UnmanagedType.LPWStr)] string pszHelpFile, uint uCommand, uint dwData, [MarshalAs(UnmanagedType.Struct)] object ptMouse, [MarshalAs(UnmanagedType.IDispatch)] object pDispatchObjectHit);
+    }
 
     [ComImport]
     [Guid("34A715A0-6587-11D0-924A-0020AFC7AC4D")]
