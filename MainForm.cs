@@ -296,9 +296,10 @@ namespace EBSBrowser
 
         private void BtnClearSession_Click(object sender, EventArgs e)
         {
-            if (MessageBox.Show("是否确认清除当前浏览器会话与 Cookie？\r\n（清除后将重新加载登录页面）", "重置会话确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+            if (MessageBox.Show("是否确认清除当前浏览器会话与 Cookie？\r\n（清除后将清理后台残留的 Java 进程并重新加载登录页面）", "重置会话确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             {
                 NativeMethods.ClearSession();
+                NativeMethods.CleanZombieJavaProcesses();
                 NavigateTo(config.HomeUrl);
             }
         }

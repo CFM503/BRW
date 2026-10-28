@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace EBSBrowser
@@ -45,6 +46,31 @@ namespace EBSBrowser
             try
             {
                 InternetSetOption(IntPtr.Zero, INTERNET_OPTION_END_BROWSER_SESSION, IntPtr.Zero, 0);
+            }
+            catch
+            {
+            }
+        }
+
+        public static void CleanZombieJavaProcesses()
+        {
+            try
+            {
+                string[] processNames = new string[] { "jp2launcher", "java", "javaw" };
+                foreach (string name in processNames)
+                {
+                    Process[] procs = Process.GetProcessesByName(name);
+                    foreach (Process p in procs)
+                    {
+                        try
+                        {
+                            p.Kill();
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
             }
             catch
             {
