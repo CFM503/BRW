@@ -18,14 +18,18 @@ namespace EBSBrowser
         private ToolStripButton btnZoomReset;
         private ToolStripButton btnZoomIn;
         private ToolStripButton btnClearSession;
+        private ToolStripButton btnKeepAlive;
         private ToolStripButton btnSettings;
         private ProgressBar progressBar;
         private StatusStrip statusStrip;
         private ToolStripStatusLabel lblStatus;
         private ToolStripStatusLabel lblZoom;
+        private ToolStripStatusLabel lblKeepAlive;
         private ToolStripStatusLabel lblArch;
 
         private int currentZoom = 100;
+        private Timer keepAliveTimer;
+        private bool isKeepAliveEnabled = true;
 
         public MainForm()
         {
@@ -122,10 +126,17 @@ namespace EBSBrowser
             toolStrip.Items.Add(txtUrl);
             toolStrip.Items.Add(btnGo);
             toolStrip.Items.Add(new ToolStripSeparator());
+            btnKeepAlive = new ToolStripButton("⚡ 防超时: 开");
+            btnKeepAlive.ToolTipText = "自动在后台刷新会话与防挂机心跳，防止 EBS 登录失效（点击可开启/关闭）";
+            btnKeepAlive.ForeColor = Color.FromArgb(16, 128, 64);
+            btnKeepAlive.Font = new Font(this.Font, FontStyle.Bold);
+            btnKeepAlive.Click += BtnKeepAlive_Click;
+
             toolStrip.Items.Add(btnZoomOut);
             toolStrip.Items.Add(btnZoomReset);
             toolStrip.Items.Add(btnZoomIn);
             toolStrip.Items.Add(new ToolStripSeparator());
+            toolStrip.Items.Add(btnKeepAlive);
             toolStrip.Items.Add(btnClearSession);
             toolStrip.Items.Add(btnSettings);
 
@@ -149,13 +160,19 @@ namespace EBSBrowser
             lblZoom.BorderSides = ToolStripStatusLabelBorderSides.Left;
             lblZoom.Padding = new Padding(8, 0, 8, 0);
 
-            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (兼容 Java 6 JRE) | v1.0.1");
+            lblKeepAlive = new ToolStripStatusLabel("⚡ 防超时: 激活");
+            lblKeepAlive.BorderSides = ToolStripStatusLabelBorderSides.Left;
+            lblKeepAlive.ForeColor = Color.FromArgb(16, 128, 64);
+            lblKeepAlive.Padding = new Padding(8, 0, 8, 0);
+
+            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (兼容 Java 6 JRE) | v1.0.2");
             lblArch.BorderSides = ToolStripStatusLabelBorderSides.Left;
             lblArch.ForeColor = Color.FromArgb(40, 110, 40);
             lblArch.Padding = new Padding(8, 0, 8, 0);
 
             statusStrip.Items.Add(lblStatus);
             statusStrip.Items.Add(lblZoom);
+            statusStrip.Items.Add(lblKeepAlive);
             statusStrip.Items.Add(lblArch);
 
             // --- Extended Browser Control ---
@@ -182,6 +199,11 @@ namespace EBSBrowser
 
         private void MainForm_Load(object sender, EventArgs e)
         {
+            keepAliveTimer = new Timer();
+            keepAliveTimer.Interval = 180000; // 3 minutes interval
+            keepAliveTimer.Tick += KeepAliveTimer_Tick;
+            keepAliveTimer.Start();
+
             NavigateTo(config.HomeUrl);
         }
 
@@ -314,6 +336,82 @@ namespace EBSBrowser
                     this.Text = config.AppTitle;
                     SetZoom(config.DefaultZoom);
                 }
+            }
+        }
+
+        private void KeepAliveTimer_Tick(object sender, EventArgs e)
+        {
+            if (!isKeepAliveEnabled) return;
+            SendKeepAlive();
+        }
+
+        private void SendKeepAlive()
+        {
+            try
+            {
+                NativeMethods.PreventSleep();
+                NativeMethods.PulseFormsActivity();
+
+                ExecuteKeepAlivePing(browser);
+
+                foreach (Form f in Application.OpenForms)
+                {
+                    PopupWindow pw = f as PopupWindow;
+                    if (pw != null && pw.Browser != null)
+                    {
+                        ExecuteKeepAlivePing(pw.Browser);
+                    }
+                }
+
+                lblKeepAlive.Text = string.Format("⚡ 保活已刷新 ({0:HH:mm:ss})", DateTime.Now);
+            }
+            catch
+            {
+            }
+        }
+
+        private void ExecuteKeepAlivePing(ExtendedWebBrowser targetBrowser)
+        {
+            try
+            {
+                if (targetBrowser != null && targetBrowser.Document != null && targetBrowser.Url != null)
+                {
+                    string script = "(function(){" +
+                        "try{" +
+                        "  var img = new Image();" +
+                        "  var host = window.location.protocol + '//' + window.location.host;" +
+                        "  if(window.location.href.indexOf('/OA_HTML/') !== -1){" +
+                        "    img.src = host + '/OA_HTML/blank.html?_t=' + (new Date()).getTime();" +
+                        "  } else {" +
+                        "    img.src = host + '/group/frontend?_t=' + (new Date()).getTime();" +
+                        "  }" +
+                        "}catch(e){}" +
+                        "})();";
+                    targetBrowser.Document.InvokeScript("eval", new object[] { script });
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private void BtnKeepAlive_Click(object sender, EventArgs e)
+        {
+            isKeepAliveEnabled = !isKeepAliveEnabled;
+            if (isKeepAliveEnabled)
+            {
+                btnKeepAlive.Text = "⚡ 防超时: 开";
+                btnKeepAlive.ForeColor = Color.FromArgb(16, 128, 64);
+                lblKeepAlive.Text = "⚡ 防超时: 激活";
+                keepAliveTimer.Start();
+                SendKeepAlive();
+            }
+            else
+            {
+                btnKeepAlive.Text = "⚡ 防超时: 关";
+                btnKeepAlive.ForeColor = Color.FromArgb(120, 120, 120);
+                lblKeepAlive.Text = "⚡ 防超时: 已关闭";
+                keepAliveTimer.Stop();
             }
         }
 

@@ -1,4 +1,4 @@
-# 中国燃气 - Oracle EBS 专属工作台 (v1.0.1)
+# 中国燃气 - Oracle EBS 专属工作台 (v1.0.2)
 
 [![Release](https://img.shields.io/github/v/release/CFM503/BRW?include_prereleases&style=flat-square)](https://github.com/CFM503/BRW/releases)
 
@@ -8,17 +8,23 @@
 
 ## 🌟 核心特色
 
-1. **精准兼容 Oracle Forms (Java Applet)**：
+1. **智能防超时保活 (Anti-Timeout Keep-Alive)**：
+   - 自动在后台每 3 分钟向 EBS 业务端发送静默心跳与刷新会话，并向 Oracle Forms 发送无感的微心跳脉冲。
+   - 彻底解决放置一段时间后弹出 **“您的登录会话不再有效。您是否想重新登录以便能够继续操作？”** 的挂机超时断连问题。
+   - 支持在工具栏一键开启/关闭：`[⚡ 防超时: 开]`。
+2. **精准兼容 Oracle Forms (Java Applet)**：
    - 采用 32位 (x86) 架构编译，原生挂载您电脑上的 32位 Java 6 运行环境 (`C:\Program Files (x86)\Java\jre6`)，完美弹出并运行 EBS Forms 表单界面。
-2. **纯粹极简，无广告与多余功能**：
-   - 仅保留前进、后退、刷新、门户首页、地址栏、页面缩放、会话清理等核心功能。
-3. **单点登录 (SSO) 与 Token 无缝衔接**：
+3. **白屏与未响应彻底免疫**：
+   - 启动时自动禁用冲突的 DirectDraw 硬件加速（改为稳定软件渲染），并自动清理后台残留的假死 Java 僵尸进程。
+4. **单点登录 (SSO) 与 Token 无缝衔接**：
    - 默认直接打开中国燃气统一门户：`https://portal.chinagasholdings.com/group/frontend`。
    - 登录后由门户传递 Token 并重定向至 EBS，会话与 Cookie 完全共享。
-4. **多窗口与数据导出原生支持**：
+5. **底层静默脚本语法报错**：
+   - 底层 COM 接管语法错误拦截，彻底杜绝登录时弹出的 `base64.js 语法错误` 干扰框。
+6. **多窗口与数据导出原生支持**：
    - 完美接管 EBS 中的弹出窗口（`window.open`），子窗口自动继承登录会话与权限。
    - EBS 中导出的 Excel / CSV / 报表支持直接调用 Windows 系统的保存对话框进行下载保存。
-5. **高分屏高清优化 (High-DPI)**：
+7. **高分屏高清优化 (High-DPI)**：
    - 支持 Windows Per-Monitor 高 DPI 缩放，文字界面清晰不发虚。
 
 ---
