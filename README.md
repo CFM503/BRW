@@ -1,4 +1,4 @@
-# 中国燃气 - Oracle EBS 专属工作台 (v1.0.3)
+# 中国燃气 - Oracle EBS 专属工作台 (v1.0.4)
 
 [![Release](https://img.shields.io/github/v/release/CFM503/BRW?include_prereleases&style=flat-square)](https://github.com/CFM503/BRW/releases)
 

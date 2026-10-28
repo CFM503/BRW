@@ -171,8 +171,10 @@ namespace EBSBrowser
             lblKeepAlive.BorderSides = ToolStripStatusLabelBorderSides.Left;
             lblKeepAlive.ForeColor = Color.FromArgb(16, 128, 64);
             lblKeepAlive.Padding = new Padding(8, 0, 8, 0);
+            lblKeepAlive.ToolTipText = "点击可立即手动触发一次保活检测并查看状态";
+            lblKeepAlive.Click += delegate { SendKeepAlive(); };
 
-            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (多页签) | v1.0.3");
+            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (多页签) | v1.0.4");
             lblArch.BorderSides = ToolStripStatusLabelBorderSides.Left;
             lblArch.ForeColor = Color.FromArgb(40, 110, 40);
             lblArch.Padding = new Padding(8, 0, 8, 0);
@@ -549,48 +551,61 @@ namespace EBSBrowser
             try
             {
                 NativeMethods.PreventSleep();
-                NativeMethods.PulseFormsActivity();
+                int pulsedForms = NativeMethods.PulseFormsActivity();
 
+                int pingedTabs = 0;
                 // Send Keep-Alive ping to all open tab browsers
                 foreach (TabPage page in tabControl.TabPages)
                 {
                     ExtendedWebBrowser b = page.Tag as ExtendedWebBrowser;
-                    if (b != null)
+                    if (b != null && ExecuteKeepAlivePing(b))
                     {
-                        ExecuteKeepAlivePing(b);
+                        pingedTabs++;
                     }
                 }
 
-                lblKeepAlive.Text = string.Format("⚡ 保活已刷新 ({0:HH:mm:ss})", DateTime.Now);
+                string formsStatus = pulsedForms > 0 ? string.Format("Forms已保活({0})", pulsedForms) : "无Forms窗口";
+                lblKeepAlive.Text = string.Format("⚡ 保活正常 ({0:HH:mm:ss} | Web:{1} | {2})", DateTime.Now, pingedTabs, formsStatus);
+                lblKeepAlive.ToolTipText = string.Format("上次保活检测: {0:yyyy-MM-dd HH:mm:ss}\r\n- Web会话刷新页签: {1}\r\n- Forms业务窗口保活数: {2}\r\n- 防睡眠锁: 激活\r\n（点击可立即手动执行一次保活）", DateTime.Now, pingedTabs, pulsedForms);
             }
             catch
             {
             }
         }
 
-        private void ExecuteKeepAlivePing(ExtendedWebBrowser targetBrowser)
+        private bool ExecuteKeepAlivePing(ExtendedWebBrowser targetBrowser)
         {
             try
             {
                 if (targetBrowser != null && targetBrowser.Document != null && targetBrowser.Url != null)
                 {
+                    // Send dynamic XHR request to OA.jsp to refresh ICX_SESSIONS.LAST_CONNECT in Oracle database
                     string script = "(function(){" +
                         "try{" +
-                        "  var img = new Image();" +
                         "  var host = window.location.protocol + '//' + window.location.host;" +
                         "  if(window.location.href.indexOf('/OA_HTML/') !== -1){" +
-                        "    img.src = host + '/OA_HTML/blank.html?_t=' + (new Date()).getTime();" +
+                        "    var xhr = new XMLHttpRequest();" +
+                        "    xhr.open('GET', host + '/OA_HTML/OA.jsp?OAFunc=OAHOMEPAGE&_ka=' + (new Date()).getTime(), true);" +
+                        "    xhr.withCredentials = true;" +
+                        "    xhr.send(null);" +
+                        "    var img = new Image();" +
+                        "    img.src = host + '/OA_HTML/cabo/images/skyros/t.gif?_t=' + (new Date()).getTime();" +
                         "  } else {" +
-                        "    img.src = host + '/group/frontend?_t=' + (new Date()).getTime();" +
+                        "    var xhr2 = new XMLHttpRequest();" +
+                        "    xhr2.open('GET', host + '/group/frontend?_ka=' + (new Date()).getTime(), true);" +
+                        "    xhr2.withCredentials = true;" +
+                        "    xhr2.send(null);" +
                         "  }" +
                         "}catch(e){}" +
                         "})();";
                     targetBrowser.Document.InvokeScript("eval", new object[] { script });
+                    return true;
                 }
             }
             catch
             {
             }
+            return false;
         }
 
         private void BtnKeepAlive_Click(object sender, EventArgs e)

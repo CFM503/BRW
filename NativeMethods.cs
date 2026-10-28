@@ -16,6 +16,12 @@ namespace EBSBrowser
 
         private const byte VK_SHIFT = 0x10;
         private const uint KEYEVENTF_KEYUP = 0x0002;
+        private const uint WM_KEYDOWN = 0x0100;
+        private const uint WM_KEYUP = 0x0101;
+        private const uint WM_MOUSEMOVE = 0x0200;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         public static extern uint SetThreadExecutionState(uint esFlags);
@@ -55,11 +61,11 @@ namespace EBSBrowser
             }
         }
 
-        public static void PulseFormsActivity()
+        public static int PulseFormsActivity()
         {
+            int pulsedCount = 0;
             try
             {
-                bool foundForms = false;
                 EnumWindows(delegate (IntPtr hWnd, IntPtr lParam)
                 {
                     if (!IsWindowVisible(hWnd)) return true;
@@ -69,24 +75,27 @@ namespace EBSBrowser
                     if (!string.IsNullOrEmpty(title) &&
                        (title.IndexOf("Oracle Applications", StringComparison.OrdinalIgnoreCase) >= 0 ||
                         title.IndexOf("Oracle Developer Forms", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        title.IndexOf("Oracle Forms", StringComparison.OrdinalIgnoreCase) >= 0))
+                        title.IndexOf("Oracle Forms", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        title.IndexOf("EBSPROD", StringComparison.OrdinalIgnoreCase) >= 0))
                     {
-                        foundForms = true;
-                        return false;
+                        // 1. Post message directly to the Forms window handle (effective even in background/minimized!)
+                        PostMessage(hWnd, WM_KEYDOWN, (IntPtr)VK_SHIFT, IntPtr.Zero);
+                        PostMessage(hWnd, WM_KEYUP, (IntPtr)VK_SHIFT, (IntPtr)0xC0000001);
+                        PostMessage(hWnd, WM_MOUSEMOVE, IntPtr.Zero, IntPtr.Zero);
+
+                        // 2. Also simulate foreground pulse if window is in front
+                        keybd_event(VK_SHIFT, 0, 0, 0);
+                        keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0);
+
+                        pulsedCount++;
                     }
                     return true;
                 }, IntPtr.Zero);
-
-                if (foundForms)
-                {
-                    // Emit a microscopic, harmless key state refresh to reset Java Forms idle timer
-                    keybd_event(VK_SHIFT, 0, 0, 0);
-                    keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0);
-                }
             }
             catch
             {
             }
+            return pulsedCount;
         }
 
         public static void EnableHighDpi()
