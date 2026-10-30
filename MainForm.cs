@@ -174,7 +174,7 @@ namespace EBSBrowser
             lblKeepAlive.ToolTipText = "点击可立即手动触发一次保活检测并查看状态";
             lblKeepAlive.Click += delegate { SendKeepAlive(); };
 
-            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (多页签) | v1.0.5");
+            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (多页签) | v1.0.6");
             lblArch.BorderSides = ToolStripStatusLabelBorderSides.Left;
             lblArch.ForeColor = Color.FromArgb(40, 110, 40);
             lblArch.Padding = new Padding(8, 0, 8, 0);
@@ -214,6 +214,26 @@ namespace EBSBrowser
             keepAliveTimer.Interval = Math.Max(1, config.KeepAliveMinutes) * 60 * 1000;
             keepAliveTimer.Tick += KeepAliveTimer_Tick;
             keepAliveTimer.Start();
+
+            // Start Tier 3 Intelligent Session Guard
+            SessionGuard.OnSessionRescued += SessionGuard_OnSessionRescued;
+            SessionGuard.Start(config);
+        }
+
+        private void SessionGuard_OnSessionRescued(string msg)
+        {
+            try
+            {
+                this.BeginInvoke(new Action(delegate
+                {
+                    lblKeepAlive.Text = "⚡ [已自动续订] " + msg;
+                    lblKeepAlive.ForeColor = Color.FromArgb(0, 102, 204);
+                    lblStatus.Text = msg;
+                }));
+            }
+            catch
+            {
+            }
         }
 
         #region Tab Management
@@ -536,6 +556,7 @@ namespace EBSBrowser
                     this.Text = config.AppTitle;
                     SetZoom(config.DefaultZoom);
                     keepAliveTimer.Interval = Math.Max(1, config.KeepAliveMinutes) * 60 * 1000;
+                    SessionGuard.UpdateConfig(config);
 
                     // If credentials were just saved, attempt auto-fill on active browser
                     ExtendedWebBrowser cur = GetCurrentBrowser();
@@ -613,10 +634,19 @@ namespace EBSBrowser
             try
             {
                 NativeMethods.PreventSleep();
+
+                // 1. Native C# background HTTP keepalive to refresh database ICX_SESSIONS timestamp directly
+                System.Threading.ThreadPool.QueueUserWorkItem(delegate
+                {
+                    NativeMethods.SendNativeEbsPing();
+                    NativeMethods.SendNativePortalPing();
+                });
+
+                // 2. Forms AWT Canvas and input message pump pulse
                 int pulsedForms = NativeMethods.PulseFormsActivity();
 
+                // 3. Tab browser dynamic script refresh
                 int pingedTabs = 0;
-                // Send Keep-Alive ping to all open tab browsers
                 foreach (TabPage page in tabControl.TabPages)
                 {
                     ExtendedWebBrowser b = page.Tag as ExtendedWebBrowser;
@@ -626,9 +656,9 @@ namespace EBSBrowser
                     }
                 }
 
-                string formsStatus = pulsedForms > 0 ? string.Format("Forms已保活({0})", pulsedForms) : "无Forms窗口";
-                lblKeepAlive.Text = string.Format("⚡ 保活正常 ({0:HH:mm:ss} | Web:{1} | {2})", DateTime.Now, pingedTabs, formsStatus);
-                lblKeepAlive.ToolTipText = string.Format("上次保活检测: {0:yyyy-MM-dd HH:mm:ss}\r\n- Web会话刷新页签: {1}\r\n- Forms业务窗口保活数: {2}\r\n- 防睡眠锁: 激活\r\n（点击可立即手动执行一次保活）", DateTime.Now, pingedTabs, pulsedForms);
+                string formsStatus = pulsedForms > 0 ? string.Format("Forms在线({0})", pulsedForms) : "未检测到Forms";
+                lblKeepAlive.Text = string.Format("⚡ 永久保活运行中 ({0:HH:mm:ss} | Web:{1} | {2})", DateTime.Now, pingedTabs, formsStatus);
+                lblKeepAlive.ToolTipText = string.Format("上次保活运行: {0:yyyy-MM-dd HH:mm:ss}\r\n- 底层C#与数据库会话直接续订: 成功\r\n- Web页签会话刷新数: {1}\r\n- Forms业务窗口看护数: {2}\r\n- 智能会话看护防掉线引擎: 运行中\r\n（点击可立即手动执行一次保活）", DateTime.Now, pingedTabs, pulsedForms);
             }
             catch
             {
@@ -645,18 +675,24 @@ namespace EBSBrowser
                     string script = "(function(){" +
                         "try{" +
                         "  var host = window.location.protocol + '//' + window.location.host;" +
-                        "  if(window.location.href.indexOf('/OA_HTML/') !== -1){" +
+                        "  var href = window.location.href;" +
+                        "  if(host.indexOf('ebs.') !== -1 || href.indexOf('/OA_HTML/') !== -1 || href.indexOf('/forms/') !== -1){" +
                         "    var xhr = new XMLHttpRequest();" +
-                        "    xhr.open('GET', host + '/OA_HTML/OA.jsp?OAFunc=OAHOMEPAGE&_ka=' + (new Date()).getTime(), true);" +
+                        "    xhr.open('GET', host + '/OA_HTML/OA.jsp?OAFunc=OANEWHOMEPAGE&_ka=' + (new Date()).getTime(), true);" +
                         "    xhr.withCredentials = true;" +
                         "    xhr.send(null);" +
                         "    var img = new Image();" +
                         "    img.src = host + '/OA_HTML/cabo/images/skyros/t.gif?_t=' + (new Date()).getTime();" +
-                        "  } else {" +
+                        "  }" +
+                        "  if(host.indexOf('portal.') !== -1 || href.indexOf('chinagas') !== -1){" +
                         "    var xhr2 = new XMLHttpRequest();" +
                         "    xhr2.open('GET', host + '/group/frontend?_ka=' + (new Date()).getTime(), true);" +
                         "    xhr2.withCredentials = true;" +
                         "    xhr2.send(null);" +
+                        "    var xhr3 = new XMLHttpRequest();" +
+                        "    xhr3.open('GET', host + '/c/portal/extend_session?_t=' + (new Date()).getTime(), true);" +
+                        "    xhr3.withCredentials = true;" +
+                        "    xhr3.send(null);" +
                         "  }" +
                         "}catch(e){}" +
                         "})();";
@@ -679,6 +715,7 @@ namespace EBSBrowser
                 btnKeepAlive.ForeColor = Color.FromArgb(16, 128, 64);
                 lblKeepAlive.Text = "⚡ 防超时: 激活";
                 keepAliveTimer.Start();
+                SessionGuard.Start(config);
                 SendKeepAlive();
             }
             else
@@ -687,6 +724,7 @@ namespace EBSBrowser
                 btnKeepAlive.ForeColor = Color.FromArgb(120, 120, 120);
                 lblKeepAlive.Text = "⚡ 防超时: 已关闭";
                 keepAliveTimer.Stop();
+                SessionGuard.Stop();
             }
         }
 
