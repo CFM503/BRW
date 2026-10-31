@@ -82,6 +82,22 @@ namespace EBSBrowser
         [DllImport("shcore.dll")]
         public static extern int SetProcessDpiAwareness(int awareness);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool SetProcessDEPPolicy(uint dwFlags);
+
+        public static void DisableDEP()
+        {
+            try
+            {
+                // Disables hardware Data Execution Prevention (DEP) for this 32-bit process,
+                // allowing Java 6 JIT code generation and native thunks to run without OS faults.
+                SetProcessDEPPolicy(0);
+            }
+            catch
+            {
+            }
+        }
+
         public static void PreventSleep()
         {
             try
@@ -258,7 +274,11 @@ namespace EBSBrowser
         {
             try
             {
-                SetProcessDpiAwareness(2);
+                // Use PROCESS_SYSTEM_DPI_AWARE (1) instead of PROCESS_PER_MONITOR_DPI_AWARE (2).
+                // Java 6 (jre6) was built in 2011 and crashes with EXCEPTION_ACCESS_VIOLATION in awt.dll
+                // when receiving modern Windows 10/11 PerMonitorV2 WM_DPICHANGED messages on high-DPI laptops.
+                // System DPI awareness keeps the UI sharp and clear while keeping Java 6 completely stable.
+                SetProcessDpiAwareness(1);
             }
             catch
             {
@@ -271,5 +291,179 @@ namespace EBSBrowser
                 }
             }
         }
+
+        #region Native Crash Interceptor & ExitProcess Protector
+
+        public static volatile bool AllowProcessExit = false;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr AddVectoredExceptionHandler(uint First, VectoredHandlerCallback Handler);
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate int VectoredHandlerCallback(IntPtr ExceptionInfo);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]
+        private static extern IntPtr GetModuleHandle(string lpModuleName);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]
+        private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetModuleHandleEx(uint dwFlags, IntPtr lpModuleName, out IntPtr phModule);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        private static extern int GetModuleFileName(IntPtr hModule, StringBuilder lpFilename, int nSize);
+
+        [DllImport("kernel32.dll")]
+        private static extern void ExitProcess(uint uExitCode);
+
+        private const uint PAGE_EXECUTE_READWRITE = 0x40;
+        private const uint GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS = 4;
+
+        [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+        private delegate void ExitProcessDelegate(uint uExitCode);
+
+        private static VectoredHandlerCallback vehCallback;
+        private static ExitProcessDelegate exitProcessHookDelegate;
+        private static byte[] originalExitProcessBytes = new byte[5];
+        private static IntPtr pExitProcess = IntPtr.Zero;
+
+        public static void InstallNativeCrashHandler()
+        {
+            try
+            {
+                // 1. Install Vectored Exception Handler (VEH) to log native crashes (Access Violations, DEP, etc.)
+                vehCallback = new VectoredHandlerCallback(OnVectoredException);
+                AddVectoredExceptionHandler(1, vehCallback);
+
+                // 2. Install ExitProcess hook to prevent external DLLs / MSHTML from abruptly terminating the browser
+                IntPtr hKernel32 = GetModuleHandle("kernel32.dll");
+                if (hKernel32 != IntPtr.Zero)
+                {
+                    pExitProcess = GetProcAddress(hKernel32, "ExitProcess");
+                    if (pExitProcess != IntPtr.Zero)
+                    {
+                        Marshal.Copy(pExitProcess, originalExitProcessBytes, 0, 5);
+
+                        exitProcessHookDelegate = new ExitProcessDelegate(HookedExitProcess);
+                        IntPtr pHook = Marshal.GetFunctionPointerForDelegate(exitProcessHookDelegate);
+
+                        int offset = (int)pHook - (int)pExitProcess - 5;
+                        byte[] patch = new byte[5];
+                        patch[0] = 0xE9; // JMP opcode
+                        BitConverter.GetBytes(offset).CopyTo(patch, 1);
+
+                        uint oldProt;
+                        if (VirtualProtect(pExitProcess, (UIntPtr)5, PAGE_EXECUTE_READWRITE, out oldProt))
+                        {
+                            Marshal.Copy(patch, 0, pExitProcess, 5);
+                            VirtualProtect(pExitProcess, (UIntPtr)5, oldProt, out oldProt);
+                            Log("System", "ExitProcess hook installed successfully.");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("CrashHandlerInit", ex.Message);
+            }
+        }
+
+        private static int OnVectoredException(IntPtr pExceptionInfo)
+        {
+            try
+            {
+                if (pExceptionInfo == IntPtr.Zero) return 0;
+
+                // ExceptionRecord is at offset 0
+                IntPtr pRecord = Marshal.ReadIntPtr(pExceptionInfo, 0);
+                if (pRecord == IntPtr.Zero) return 0;
+
+                uint code = (uint)Marshal.ReadInt32(pRecord, 0);
+                // Filter out non-fatal / expected debug & RPC exceptions
+                if (code == 0x406D1388 || code == 0x000006BA || code == 0xE0434352 || code == 0x8007000E)
+                {
+                    return 0; // EXCEPTION_CONTINUE_SEARCH
+                }
+
+                // Log fatal errors (0xC0000005 = Access Violation, 0xC00000FD = Stack Overflow, 0xC0000409 = FastFail)
+                if (code == 0xC0000005 || code == 0xC00000FD || code == 0xC0000409 || code == 0xC000001D)
+                {
+                    IntPtr addr = Marshal.ReadIntPtr(pRecord, 12); // ExceptionAddress
+                    string modName = GetModuleNameFromAddress(addr);
+
+                    string msg = string.Format("[VEH FATAL EXCEPTION] Code: 0x{0:X8}, Address: 0x{1:X8}, Module: {2}", code, (int)addr, modName);
+                    Log("NativeCrash", msg);
+
+                    try
+                    {
+                        string crashPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log");
+                        System.IO.File.AppendAllText(crashPath, string.Format("[{0:yyyy-MM-dd HH:mm:ss}] {1}\r\n", DateTime.Now, msg));
+                    }
+                    catch {}
+                }
+            }
+            catch {}
+            return 0; // EXCEPTION_CONTINUE_SEARCH
+        }
+
+        private static void HookedExitProcess(uint uExitCode)
+        {
+            try
+            {
+                if (AllowProcessExit)
+                {
+                    Log("ExitProcess", string.Format("Legitimate exit confirmed with code {0}. Exiting cleanly.", uExitCode));
+                    // Restore original bytes and exit
+                    uint oldProt;
+                    VirtualProtect(pExitProcess, (UIntPtr)5, PAGE_EXECUTE_READWRITE, out oldProt);
+                    Marshal.Copy(originalExitProcessBytes, 0, pExitProcess, 5);
+                    VirtualProtect(pExitProcess, (UIntPtr)5, oldProt, out oldProt);
+                    ExitProcess(uExitCode);
+                    return;
+                }
+
+                // If exit was NOT requested by the user, block it!
+                Log("ExitProcess", string.Format("BLOCKED unauthorized ExitProcess(code={0})! Application remains alive.", uExitCode));
+            }
+            catch (Exception ex)
+            {
+                Log("HookedExitProcess", ex.Message);
+            }
+        }
+
+        private static string GetModuleNameFromAddress(IntPtr addr)
+        {
+            try
+            {
+                IntPtr hMod;
+                if (GetModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, addr, out hMod) && hMod != IntPtr.Zero)
+                {
+                    StringBuilder sb = new StringBuilder(260);
+                    if (GetModuleFileName(hMod, sb, sb.Capacity) > 0)
+                    {
+                        return System.IO.Path.GetFileName(sb.ToString());
+                    }
+                }
+            }
+            catch {}
+            return "UnknownModule";
+        }
+
+        public static void Log(string category, string message)
+        {
+            try
+            {
+                string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
+                string line = string.Format("[{0:yyyy-MM-dd HH:mm:ss.fff}] [{1}] {2}\r\n", DateTime.Now, category, message);
+                System.IO.File.AppendAllText(path, line);
+            }
+            catch {}
+        }
+
+        #endregion
     }
 }

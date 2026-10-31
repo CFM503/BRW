@@ -25,42 +25,43 @@ namespace EBSBrowser
 
         private void InitializeComponent()
         {
-            this.Text = "浏览器与工作台设置";
-            this.Size = new Size(550, 480);
+            this.Text = "浏览器与工作台设置 - v1.0.7";
+            this.ClientSize = new Size(560, 475);
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
             this.StartPosition = FormStartPosition.CenterParent;
+            this.AutoScaleMode = AutoScaleMode.Font;
             this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point, 134);
 
             // --- 基础参数 ---
-            Label lblTitle = new Label() { Text = "窗口标题:", Location = new Point(25, 25), AutoSize = true };
-            txtTitle = new TextBox() { Location = new Point(125, 22), Size = new Size(375, 24), Text = config.AppTitle };
+            Label lblTitle = new Label() { Text = "窗口标题:", Location = new Point(25, 23), AutoSize = true };
+            txtTitle = new TextBox() { Location = new Point(130, 20), Size = new Size(395, 24), Text = config.AppTitle };
 
-            Label lblUrl = new Label() { Text = "门户首页:", Location = new Point(25, 65), AutoSize = true };
-            txtHomeUrl = new TextBox() { Location = new Point(125, 62), Size = new Size(375, 24), Text = config.HomeUrl };
+            Label lblUrl = new Label() { Text = "门户首页:", Location = new Point(25, 63), AutoSize = true };
+            txtHomeUrl = new TextBox() { Location = new Point(130, 60), Size = new Size(395, 24), Text = config.HomeUrl };
 
-            Label lblZoom = new Label() { Text = "默认缩放:", Location = new Point(25, 105), AutoSize = true };
-            numZoom = new NumericUpDown() { Location = new Point(125, 102), Size = new Size(75, 24), Minimum = 50, Maximum = 250, Value = config.DefaultZoom, Increment = 5 };
-            Label lblPercent = new Label() { Text = "%", Location = new Point(205, 105), AutoSize = true };
+            // 缩放设置独立成行，杜绝高分屏重叠
+            Label lblZoom = new Label() { Text = "默认缩放:", Location = new Point(25, 103), AutoSize = true };
+            numZoom = new NumericUpDown() { Location = new Point(130, 100), Size = new Size(80, 24), Minimum = 50, Maximum = 250, Value = config.DefaultZoom, Increment = 5 };
+            Label lblPercent = new Label() { Text = "%", Location = new Point(215, 103), AutoSize = true };
 
-            // 心跳保活时间设置
-            Label lblKeepAlive = new Label() { Text = "保活心跳间隔:", Location = new Point(255, 105), AutoSize = true };
-            numKeepAlive = new NumericUpDown() { Location = new Point(355, 102), Size = new Size(75, 24), Minimum = 1, Maximum = 30, Value = config.KeepAliveMinutes, Increment = 1 };
-            Label lblMinutes = new Label() { Text = "分钟", Location = new Point(435, 105), AutoSize = true };
+            // 心跳保活时间独立成行，高分屏文字完整展示不遮挡
+            Label lblKeepAlive = new Label() { Text = "保活心跳:", Location = new Point(25, 143), AutoSize = true };
+            numKeepAlive = new NumericUpDown() { Location = new Point(130, 140), Size = new Size(80, 24), Minimum = 1, Maximum = 30, Value = config.KeepAliveMinutes, Increment = 1 };
+            Label lblMinutes = new Label() { Text = "分钟 (系统后台自动向 EBS 发送保活心跳防掉线)", Location = new Point(215, 143), AutoSize = true };
 
             // --- 账号密码安全凭据存储 ---
             GroupBox grpLogin = new GroupBox();
-            grpLogin.Text = "门户登录凭据（Windows DPAPI 安全加密保存在本机）";
-            grpLogin.Location = new Point(20, 150);
-            grpLogin.Size = new Size(495, 220);
-            grpLogin.Font = new Font(this.Font, FontStyle.Regular);
+            grpLogin.Text = "门户登录凭据（Windows DPAPI 高强度安全加密保存在本机）";
+            grpLogin.Location = new Point(20, 180);
+            grpLogin.Size = new Size(515, 225);
 
-            Label lblUser = new Label() { Text = "登录工号/账号:", Location = new Point(20, 35), AutoSize = true };
-            txtUsername = new TextBox() { Location = new Point(125, 32), Size = new Size(340, 24), Text = config.SavedUsername };
+            Label lblUser = new Label() { Text = "工号/账号:", Location = new Point(20, 33), AutoSize = true };
+            txtUsername = new TextBox() { Location = new Point(110, 30), Size = new Size(380, 24), Text = config.SavedUsername };
 
-            Label lblPwd = new Label() { Text = "登录密码:", Location = new Point(20, 75), AutoSize = true };
-            txtPassword = new TextBox() { Location = new Point(125, 72), Size = new Size(340, 24), UseSystemPasswordChar = true };
+            Label lblPwd = new Label() { Text = "登录密码:", Location = new Point(20, 73), AutoSize = true };
+            txtPassword = new TextBox() { Location = new Point(110, 70), Size = new Size(380, 24), UseSystemPasswordChar = true };
 
             // Decrypt password if saved
             if (!string.IsNullOrEmpty(config.SavedPasswordCipher))
@@ -71,7 +72,7 @@ namespace EBSBrowser
             chkAutoFill = new CheckBox()
             {
                 Text = "打开门户登录页面时，自动填写账号与密码",
-                Location = new Point(125, 115),
+                Location = new Point(110, 108),
                 AutoSize = true,
                 Checked = config.AutoFillLogin
             };
@@ -79,8 +80,8 @@ namespace EBSBrowser
             btnClearCred = new Button()
             {
                 Text = "清空已存密码",
-                Location = new Point(125, 150),
-                Size = new Size(110, 28)
+                Location = new Point(110, 140),
+                Size = new Size(115, 28)
             };
             btnClearCred.Click += delegate
             {
@@ -93,10 +94,10 @@ namespace EBSBrowser
 
             Label lblSecurityTip = new Label()
             {
-                Text = "提示：密码采用当前 Windows 用户密钥安全加密，仅本机可用，保护企业账号安全。",
+                Text = "安全保障：密码仅限本机当前 Windows 登录账户解密，绝非明文存储。",
                 ForeColor = Color.FromArgb(100, 116, 139),
                 Location = new Point(20, 185),
-                Size = new Size(460, 24),
+                Size = new Size(475, 24),
                 AutoSize = false
             };
 
@@ -109,10 +110,10 @@ namespace EBSBrowser
             grpLogin.Controls.Add(lblSecurityTip);
 
             // --- 底部按钮 ---
-            Button btnSave = new Button() { Text = "保存设置", DialogResult = DialogResult.OK, Location = new Point(315, 390), Size = new Size(95, 32) };
+            Button btnSave = new Button() { Text = "保存设置", DialogResult = DialogResult.OK, Location = new Point(325, 422), Size = new Size(95, 32) };
             btnSave.Click += BtnSave_Click;
 
-            Button btnCancel = new Button() { Text = "取消", DialogResult = DialogResult.Cancel, Location = new Point(420, 390), Size = new Size(95, 32) };
+            Button btnCancel = new Button() { Text = "取消", DialogResult = DialogResult.Cancel, Location = new Point(435, 422), Size = new Size(95, 32) };
 
             this.Controls.Add(lblTitle);
             this.Controls.Add(txtTitle);
@@ -148,9 +149,10 @@ namespace EBSBrowser
 
             // Save encrypted credentials
             config.SavedUsername = txtUsername.Text.Trim();
-            if (!string.IsNullOrEmpty(txtPassword.Text))
+            string plainPwd = txtPassword.Text;
+            if (!string.IsNullOrEmpty(plainPwd))
             {
-                config.SavedPasswordCipher = CredentialManager.EncryptPassword(txtPassword.Text);
+                config.SavedPasswordCipher = CredentialManager.EncryptPassword(plainPwd);
             }
             else
             {
@@ -158,7 +160,6 @@ namespace EBSBrowser
             }
 
             ConfigManager.Save(config);
-            this.DialogResult = DialogResult.OK;
             this.Close();
         }
     }

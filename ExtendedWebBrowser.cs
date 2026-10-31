@@ -10,6 +10,7 @@ namespace EBSBrowser
     {
         private AxHost.ConnectionPointCookie cookie;
         private WebBrowserExtendedEvents events;
+        private long lastNewWindowTicks = 0;
 
         public event EventHandler<NewWindow2EventArgs> NewWindow2Event;
         public event EventHandler<NewWindow3EventArgs> NewWindow3Event;
@@ -20,7 +21,9 @@ namespace EBSBrowser
         public ExtendedWebBrowser()
         {
             // Suppress standard IE script error dialogs completely
-            this.ScriptErrorsSuppressed = true;
+            // DO NOT set ScriptErrorsSuppressed = true; doing so suppresses native Java security prompts!
+            // Script errors are already cleanly handled by CustomWebBrowserSite (IOleCommandTarget).
+            this.ScriptErrorsSuppressed = false;
         }
 
         protected override WebBrowserSiteBase CreateWebBrowserSiteBase()
@@ -97,6 +100,8 @@ namespace EBSBrowser
 
         internal void OnNewWindow3(ref object ppDisp, ref bool cancel, uint dwFlags, string bstrUrlContext, string bstrUrl)
         {
+            lastNewWindowTicks = Environment.TickCount;
+
             EventHandler<NewWindow3EventArgs> handler = NewWindow3Event;
             if (handler != null)
             {
@@ -118,12 +123,17 @@ namespace EBSBrowser
 
         internal void OnWindowClosing(bool isChildWindow, ref bool cancel)
         {
+            // CRITICAL: Always force cancel = true for MSHTML!
+            // When cancel is false, MSHTML executes its default window closing pipeline
+            // by destroying the control or sending WM_CLOSE to the host form, closing the entire application!
+            cancel = true;
+
             EventHandler<WindowClosingEventArgs> handler = WindowClosingEvent;
             if (handler != null)
             {
-                WindowClosingEventArgs args = new WindowClosingEventArgs(isChildWindow, cancel);
+                WindowClosingEventArgs args = new WindowClosingEventArgs(isChildWindow, true);
                 handler(this, args);
-                cancel = args.Cancel;
+                // Keep cancel = true regardless of managed handler so MSHTML never destroys MainForm
             }
         }
 
@@ -158,23 +168,37 @@ namespace EBSBrowser
 
             public int Exec(ref Guid pguidCmdGroup, uint nCmdID, uint nCmdexecopt, IntPtr pvaIn, IntPtr pvaOut)
             {
-                if (pguidCmdGroup == CGID_DocHostCommandHandler)
+                try
                 {
-                    if (nCmdID == OLECMDID_SHOWSCRIPTERROR)
+                    if (pguidCmdGroup == CGID_DocHostCommandHandler)
                     {
-                        // Return S_OK (0) to tell MSHTML that the script error was handled and suppress the dialog!
-                        return 0;
+                        if (nCmdID == OLECMDID_SHOWSCRIPTERROR)
+                        {
+                            // Return S_OK (0) to tell MSHTML that the script error was handled and suppress the dialog!
+                            return 0;
+                        }
                     }
+                }
+                catch
+                {
                 }
                 return OLECMDERR_E_UNKNOWNGROUP;
             }
 
             public int ShowMessage(IntPtr hwnd, string lpstrText, string lpstrCaption, uint dwType, string lpstrHelpFile, uint dwHelpContext, out int lpResult)
             {
-                // Preserve genuine webpage alert / confirm dialogs if needed
-                string caption = string.IsNullOrEmpty(lpstrCaption) ? "系统提示" : lpstrCaption;
-                lpResult = MessageBoxW(hwnd, lpstrText, caption, dwType);
-                return 0;
+                try
+                {
+                    // Preserve genuine webpage alert / confirm dialogs if needed
+                    string caption = string.IsNullOrEmpty(lpstrCaption) ? "系统提示" : lpstrCaption;
+                    lpResult = MessageBoxW(hwnd, lpstrText, caption, dwType);
+                    return 0;
+                }
+                catch
+                {
+                    lpResult = 0;
+                    return 0;
+                }
             }
 
             public int ShowHelp(IntPtr hwnd, string pszHelpFile, uint uCommand, uint dwData, object ptMouse, object pDispatchObjectHit)
@@ -359,15 +383,41 @@ namespace EBSBrowser
 
         public void TitleChange(string text) { }
 
-        public void BeforeNavigate2(object pDisp, ref object URL, ref object Flags, ref object TargetFrameName, ref object PostData, ref object Headers, ref bool Cancel) { }
+        public void BeforeNavigate2(object pDisp, ref object URL, ref object Flags, ref object TargetFrameName, ref object PostData, ref object Headers, ref bool Cancel)
+        {
+            try
+            {
+                string u = URL != null ? URL.ToString() : "";
+                string f = TargetFrameName != null ? TargetFrameName.ToString() : "";
+                NativeMethods.Log("Nav", string.Format("BeforeNavigate2: URL={0}, Frame={1}", u, f));
+            }
+            catch {}
+        }
 
         public void NewWindow2(ref object ppDisp, ref bool Cancel)
         {
             browser.OnNewWindow2(ref ppDisp, ref Cancel);
         }
 
-        public void NavigateComplete2(object pDisp, ref object URL) { }
-        public void DocumentComplete(object pDisp, ref object URL) { }
+        public void NavigateComplete2(object pDisp, ref object URL)
+        {
+            try
+            {
+                string u = URL != null ? URL.ToString() : "";
+                NativeMethods.Log("Nav", "NavigateComplete2: URL=" + u);
+            }
+            catch {}
+        }
+
+        public void DocumentComplete(object pDisp, ref object URL)
+        {
+            try
+            {
+                string u = URL != null ? URL.ToString() : "";
+                NativeMethods.Log("Nav", "DocumentComplete: URL=" + u);
+            }
+            catch {}
+        }
 
         public void WindowClosing(bool isChildWindow, ref bool Cancel)
         {
@@ -376,6 +426,11 @@ namespace EBSBrowser
 
         public void FileDownload(bool activeDocument, ref bool cancel)
         {
+            try
+            {
+                NativeMethods.Log("Nav", "FileDownload triggered. activeDocument=" + activeDocument);
+            }
+            catch {}
             browser.OnFileDownload(activeDocument, ref cancel);
         }
 

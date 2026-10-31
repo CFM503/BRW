@@ -1,28 +1,35 @@
 @echo off
-chcp 65001 >nul
+setlocal
 echo ===================================================
-echo 正在编译 中国燃气 - Oracle EBS 专属浏览器 (x86)...
+echo [Build] Compiling China Gas - Oracle EBS Dedicated Browser (x86)...
 echo ===================================================
 
 set CSC=C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe
 
 if not exist "%CSC%" (
-    echo [错误] 未找到 .NET Framework 编译器: %CSC%
+    echo [ERROR] .NET Framework Compiler not found: %CSC%
     pause
     exit /b 1
 )
 
 "%CSC%" /target:winexe /platform:x86 /r:System.Security.dll /win32manifest:app.manifest /win32icon:app.ico /out:EBSBrowser.exe *.cs
-
-if %ERRORLEVEL% equ 0 (
+if %ERRORLEVEL% neq 0 (
     echo.
-    echo ===================================================
-    echo [成功] EBS 专属浏览器编译完成！
-    echo 生成文件: %~dp0EBSBrowser.exe
-    echo ===================================================
-) else (
-    echo.
-    echo [错误] 编译失败，请检查报错信息。
+    echo [ERROR] Compilation failed!
+    pause
+    exit /b 1
 )
+
+echo.
+echo [DEP Patch] Patching PE Header for Java 6 compatibility...
+"%CSC%" /target:exe /out:"%~dp0tools\PatchPE.exe" "%~dp0tools\PatchPE.cs" >nul
+"%~dp0tools\PatchPE.exe" "%~dp0EBSBrowser.exe"
+if exist "%~dp0tools\PatchPE.exe" del "%~dp0tools\PatchPE.exe"
+
+echo.
+echo ===================================================
+echo [SUCCESS] EBS Dedicated Browser build complete!
+echo Output: %~dp0EBSBrowser.exe
+echo ===================================================
 
 pause

@@ -6,6 +6,7 @@ namespace EBSBrowser
 {
     public class MainForm : Form
     {
+        public const string AppVersion = "1.0.9";
         private AppConfig config;
         private TabControl tabControl;
 
@@ -33,7 +34,7 @@ namespace EBSBrowser
         private Timer keepAliveTimer;
         private bool isKeepAliveEnabled = true;
 
-        public MainForm()
+        public MainForm(string initialUrl = null)
         {
             try
             {
@@ -41,13 +42,17 @@ namespace EBSBrowser
             }
             catch {}
             config = ConfigManager.Load();
+            if (!string.IsNullOrEmpty(initialUrl))
+            {
+                config.HomeUrl = initialUrl;
+            }
             currentZoom = config.DefaultZoom;
             InitializeComponent();
         }
 
         private void InitializeComponent()
         {
-            this.Text = config.AppTitle;
+            this.Text = string.Format("{0} - [版本: v{1}]", config.AppTitle, AppVersion);
             this.Size = new Size(1300, 850);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point, 134);
@@ -147,6 +152,13 @@ namespace EBSBrowser
             toolStrip.Items.Add(btnClearSession);
             toolStrip.Items.Add(btnSettings);
 
+            ToolStripLabel lblVersionBadge = new ToolStripLabel(string.Format("版本: v{0}", AppVersion));
+            lblVersionBadge.ForeColor = Color.FromArgb(40, 110, 40);
+            lblVersionBadge.Font = new Font(this.Font, FontStyle.Bold);
+            lblVersionBadge.Alignment = ToolStripItemAlignment.Right;
+            lblVersionBadge.Padding = new Padding(0, 0, 10, 0);
+            toolStrip.Items.Add(lblVersionBadge);
+
             // --- Progress Bar ---
             progressBar = new ProgressBar();
             progressBar.Dock = DockStyle.Top;
@@ -174,15 +186,16 @@ namespace EBSBrowser
             lblKeepAlive.ToolTipText = "点击可立即手动触发一次保活检测并查看状态";
             lblKeepAlive.Click += delegate { SendKeepAlive(); };
 
-            lblArch = new ToolStripStatusLabel("内核: 32位 IE11 (多页签) | v1.0.6");
+            lblArch = new ToolStripStatusLabel(string.Format("当前版本: v{0} (32位 IE11)", AppVersion));
             lblArch.BorderSides = ToolStripStatusLabelBorderSides.Left;
             lblArch.ForeColor = Color.FromArgb(40, 110, 40);
+            lblArch.Font = new Font(this.Font, FontStyle.Bold);
             lblArch.Padding = new Padding(8, 0, 8, 0);
 
             statusStrip.Items.Add(lblStatus);
+            statusStrip.Items.Add(lblArch);
             statusStrip.Items.Add(lblZoom);
             statusStrip.Items.Add(lblKeepAlive);
-            statusStrip.Items.Add(lblArch);
 
             // --- Tab Control ---
             tabControl = new TabControl();
@@ -254,13 +267,18 @@ namespace EBSBrowser
             b.Dock = DockStyle.Fill;
             page.Tag = b;
             page.Controls.Add(b);
+            b.CreateControl();
 
             // Wire browser events
             b.Navigated += delegate(object s, WebBrowserNavigatedEventArgs args)
             {
-                if (tabControl.SelectedTab == page && args.Url != null)
+                if (args.Url != null)
                 {
-                    txtUrl.Text = args.Url.ToString();
+                    NativeMethods.Log("Navigated", string.Format("Tab '{0}' navigated to: {1}", page.Text, args.Url));
+                    if (tabControl.SelectedTab == page)
+                    {
+                        txtUrl.Text = args.Url.ToString();
+                    }
                 }
             };
 
@@ -291,7 +309,7 @@ namespace EBSBrowser
                     page.Text = tabText;
                     if (tabControl.SelectedTab == page)
                     {
-                        this.Text = docTitle + " - " + config.AppTitle;
+                        this.Text = string.Format("{0} - {1} (v{2})", docTitle, config.AppTitle, AppVersion);
                     }
                 }
             };
@@ -335,23 +353,104 @@ namespace EBSBrowser
                 if (tabControl.SelectedTab == page) btnForward.Enabled = b.CanGoForward;
             };
 
+            DateTime tabCreatedTime = DateTime.Now;
+
             // Intercept popup windows and turn them into tabs!
             b.NewWindow3Event += delegate(object s, NewWindow3EventArgs args)
             {
-                ExtendedWebBrowser newTabBrowser = CreateNewTab("加载中...", null, true);
-                args.PPDisp = newTabBrowser.ActiveXInstance;
+                try
+                {
+                    NativeMethods.Log("NewWindow3", string.Format("Popup requested. Target URL: {0}, Context: {1}", args.Url, args.UrlContext));
+                    if (!string.IsNullOrEmpty(args.Url) && !args.Url.Equals("about:blank", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Direct tab creation and navigation: 100% reliable across all IE/EBS versions!
+                        args.Cancel = true;
+                        string targetUrl = args.Url;
+                        try
+                        {
+                            if (b.Url != null && !targetUrl.Contains("://"))
+                            {
+                                targetUrl = new Uri(b.Url, targetUrl).ToString();
+                            }
+                        }
+                        catch {}
+                        this.BeginInvoke(new Action(delegate
+                        {
+                            CreateNewTab("加载中...", targetUrl, true);
+                        }));
+                        NativeMethods.Log("NewWindow3", "Handled via direct tab navigation to: " + targetUrl);
+                    }
+                    else
+                    {
+                        ExtendedWebBrowser newTabBrowser = CreateNewTab("加载中...", null, true);
+                        if (newTabBrowser != null)
+                        {
+                            args.PPDisp = newTabBrowser.ActiveXInstance;
+                            NativeMethods.Log("NewWindow3", "Assigned PPDisp for blank popup.");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    NativeMethods.Log("NewWindow3_Error", ex.Message);
+                }
             };
 
             b.NewWindow2Event += delegate(object s, NewWindow2EventArgs args)
             {
-                ExtendedWebBrowser newTabBrowser = CreateNewTab("加载中...", null, true);
-                args.PPDisp = newTabBrowser.ActiveXInstance;
+                try
+                {
+                    NativeMethods.Log("NewWindow2", "Popup requested via NewWindow2");
+                    ExtendedWebBrowser newTabBrowser = CreateNewTab("加载中...", null, true);
+                    if (newTabBrowser != null)
+                    {
+                        args.PPDisp = newTabBrowser.ActiveXInstance;
+                        NativeMethods.Log("NewWindow2", "Assigned PPDisp for NewWindow2.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    NativeMethods.Log("NewWindow2_Error", ex.Message);
+                }
             };
 
             b.WindowClosingEvent += delegate(object s, WindowClosingEventArgs args)
             {
-                args.Cancel = false;
-                this.BeginInvoke(new Action(delegate { CloseTab(page, false); }));
+                try
+                {
+                    NativeMethods.Log("WindowClosing", string.Format("window.close() called on tab: '{0}', URL: '{1}'", page.Text, b.Url));
+                    // CRITICAL: Always keep Cancel = true for COM so MSHTML does not send WM_CLOSE to MainForm!
+                    args.Cancel = true;
+
+                    // NEVER close if it's the only tab or the primary home tab:
+                    if (page == tabControl.TabPages[0] || tabControl.TabPages.Count <= 1)
+                    {
+                        NativeMethods.Log("WindowClosing", "Ignored close request for primary tab.");
+                        return;
+                    }
+
+                    string tabUrl = (b.Url != null) ? b.Url.ToString() : "";
+                    string tabTitle = b.DocumentTitle ?? "";
+                    bool isEbs = (tabUrl.IndexOf("/OA_HTML/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                  tabUrl.IndexOf("frmservlet", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                  tabUrl.IndexOf("/forms/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                  tabTitle.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                  tabTitle.IndexOf("EBS", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                    // If it is an EBS Form or was created recently (< 30s) or is busy, NEVER auto-close it!
+                    if (isEbs || (DateTime.Now - tabCreatedTime).TotalSeconds < 30 || b.IsBusy)
+                    {
+                        NativeMethods.Log("WindowClosing", "Ignored close request for active/recent EBS session.");
+                        return;
+                    }
+
+                    // Only transient helper popups (e.g. intermediate OAuth / SSO popup that finished) can be closed:
+                    this.BeginInvoke(new Action(delegate { CloseTab(page, false); }));
+                }
+                catch (Exception ex)
+                {
+                    NativeMethods.Log("WindowClosing_Error", ex.Message);
+                }
             };
 
             tabControl.TabPages.Add(page);
@@ -657,7 +756,7 @@ namespace EBSBrowser
                 }
 
                 string formsStatus = pulsedForms > 0 ? string.Format("Forms在线({0})", pulsedForms) : "未检测到Forms";
-                lblKeepAlive.Text = string.Format("⚡ 永久保活运行中 ({0:HH:mm:ss} | Web:{1} | {2})", DateTime.Now, pingedTabs, formsStatus);
+                lblKeepAlive.Text = string.Format("⚡ 防超时: 在线 ({0:HH:mm} | {1})", DateTime.Now, formsStatus);
                 lblKeepAlive.ToolTipText = string.Format("上次保活运行: {0:yyyy-MM-dd HH:mm:ss}\r\n- 底层C#与数据库会话直接续订: 成功\r\n- Web页签会话刷新数: {1}\r\n- Forms业务窗口看护数: {2}\r\n- 智能会话看护防掉线引擎: 运行中\r\n（点击可立即手动执行一次保活）", DateTime.Now, pingedTabs, pulsedForms);
             }
             catch
@@ -786,6 +885,74 @@ namespace EBSBrowser
                 txtUrl.SelectAll();
                 e.Handled = true;
             }
+        }
+
+        #endregion
+
+        #region Form Lifecycle & Protection
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            NativeMethods.Log("FormClosing", string.Format("OnFormClosing called, CloseReason: {0}", e.CloseReason));
+
+            // Block external / COM / MSHTML initiated closures (e.g. window.close() sending WM_CLOSE to host form)
+            if (e.CloseReason == CloseReason.None)
+            {
+                e.Cancel = true;
+                NativeMethods.Log("FormClosing", "BLOCKED unexpected external CloseReason.None from closing MainForm.");
+                return;
+            }
+
+            if (e.CloseReason == CloseReason.UserClosing)
+            {
+                bool hasEbs = false;
+                foreach (TabPage p in tabControl.TabPages)
+                {
+                    ExtendedWebBrowser eb = p.Tag as ExtendedWebBrowser;
+                    if (eb != null)
+                    {
+                        string u = (eb.Url != null) ? eb.Url.ToString() : "";
+                        string t = eb.DocumentTitle ?? "";
+                        if (u.IndexOf("/OA_HTML/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            u.IndexOf("frmservlet", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            t.IndexOf("Oracle", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            t.IndexOf("EBS", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            hasEbs = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (hasEbs)
+                {
+                    DialogResult dr = MessageBox.Show(
+                        "当前正在运行 Oracle EBS 业务表单，退出工作台将导致表单立即断开并可能丢失未保存数据！\r\n\r\n确定要退出吗？",
+                        "退出确认",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning,
+                        MessageBoxDefaultButton.Button2);
+                    if (dr != DialogResult.Yes)
+                    {
+                        e.Cancel = true;
+                        return;
+                    }
+                }
+            }
+
+            // Legitimate exit allowed
+            NativeMethods.AllowProcessExit = true;
+            base.OnFormClosing(e);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            const int WM_CLOSE = 0x0010;
+            if (m.Msg == WM_CLOSE)
+            {
+                NativeMethods.Log("WndProc", "WM_CLOSE message received.");
+            }
+            base.WndProc(ref m);
         }
 
         #endregion
