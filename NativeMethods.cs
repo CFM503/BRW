@@ -147,32 +147,162 @@ namespace EBSBrowser
         }
 
         /// <summary>
-        /// Tier 1: Direct native C# background HTTP keepalive to refresh database ICX_SESSIONS timestamp
+        /// Reads ALL cookies (including HttpOnly session cookies) for a URL from the shared WinINet cookie jar.
+        /// Retries with a larger buffer so long cookie strings are never silently dropped
+        /// (the old fixed 4096-char buffer made pings go out anonymously).
         /// </summary>
-        public static bool SendNativeEbsPing()
+        public static string GetCookies(string url)
         {
             try
             {
-                ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
-                ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072 | SecurityProtocolType.Tls;
-
-                string ebsUrl = "https://ebs.chinagasholdings.com/OA_HTML/OA.jsp?OAFunc=OANEWHOMEPAGE&_ka=" + Environment.TickCount;
-                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(ebsUrl);
-                req.Method = "GET";
-                req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko";
-                req.Timeout = 8000;
-
-                int size = 4096;
-                StringBuilder sb = new StringBuilder(size);
-                if (InternetGetCookieEx("https://ebs.chinagasholdings.com/", null, sb, ref size, INTERNET_COOKIE_HTTPONLY, IntPtr.Zero))
+                int size = 8192;
+                for (int attempt = 0; attempt < 4; attempt++)
                 {
-                    req.Headers.Add("Cookie", sb.ToString());
+                    StringBuilder sb = new StringBuilder(size);
+                    int req = size;
+                    if (InternetGetCookieEx(url, null, sb, ref req, INTERNET_COOKIE_HTTPONLY, IntPtr.Zero))
+                    {
+                        return sb.ToString();
+                    }
+                    int err = Marshal.GetLastWin32Error();
+                    if (err != 122 /* ERROR_INSUFFICIENT_BUFFER */) break;
+                    size = Math.Max(req + 256, size * 2);
+                }
+            }
+            catch
+            {
+            }
+            return "";
+        }
+
+        /// <summary>
+        /// Returns only the cookie NAMES of a cookie header (values are never logged).
+        /// </summary>
+        public static string CookieNames(string cookieHeader)
+        {
+            if (string.IsNullOrEmpty(cookieHeader)) return "(none)";
+            StringBuilder sb = new StringBuilder();
+            foreach (string part in cookieHeader.Split(';'))
+            {
+                string p = part.Trim();
+                int eq = p.IndexOf('=');
+                string name = eq > 0 ? p.Substring(0, eq) : p;
+                if (name.Length == 0) continue;
+                if (sb.Length > 0) sb.Append(',');
+                sb.Append(name);
+            }
+            return sb.ToString();
+        }
+
+        #region Foreground / input helpers (used by SessionGuard rescue)
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RECT { public int Left, Top, Right, Bottom; }
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+        [DllImport("kernel32.dll")]
+        public static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        public static extern bool BringWindowToTop(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr SetFocus(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool CloseDesktop(IntPtr hDesktop);
+
+        private const byte VK_RETURN = 0x0D;
+        private const uint DESKTOP_SWITCHDESKTOP = 0x0100;
+        private const int SW_RESTORE = 9;
+        private const uint GA_ROOT = 2;
+
+        /// <summary>
+        /// True when the interactive desktop is locked / on the secure desktop (UAC, Ctrl+Alt+Del).
+        /// In that state no synthetic input can reach any application.
+        /// </summary>
+        public static bool IsDesktopLocked()
+        {
+            try
+            {
+                IntPtr hDesk = OpenInputDesktop(0, false, DESKTOP_SWITCHDESKTOP);
+                if (hDesk == IntPtr.Zero) return true;
+                CloseDesktop(hDesk);
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static string DescribeWindow(IntPtr hWnd)
+        {
+            StringBuilder t = new StringBuilder(256);
+            GetWindowText(hWnd, t, 256);
+            StringBuilder c = new StringBuilder(256);
+            GetClassName(hWnd, c, 256);
+            RECT r;
+            GetWindowRect(hWnd, out r);
+            return string.Format("hWnd=0x{0:X} class='{1}' title='{2}' rect=({3},{4},{5}x{6}) visible={7}",
+                hWnd.ToInt64(), c, t, r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top, IsWindowVisible(hWnd));
+        }
+
+        /// <summary>
+        /// Reliably brings a (possibly cross-process, possibly child) window to the foreground
+        /// using AttachThreadInput, which bypasses the foreground lock when the user is away.
+        /// Returns true only if the window's root actually became the foreground window.
+        /// </summary>
+        public static bool ForceForeground(IntPtr hWnd)
+        {
+            try
+            {
+                IntPtr root = GetAncestor(hWnd, GA_ROOT);
+                if (root == IntPtr.Zero) root = hWnd;
+                if (IsIconic(root)) ShowWindow(root, SW_RESTORE);
+
+                uint dummy;
+                uint myThread = GetCurrentThreadId();
+                IntPtr fg = GetForegroundWindow();
+                uint fgThread = fg != IntPtr.Zero ? GetWindowThreadProcessId(fg, out dummy) : 0;
+                uint targetThread = GetWindowThreadProcessId(hWnd, out dummy);
+
+                bool attachedFg = fgThread != 0 && fgThread != myThread && AttachThreadInput(myThread, fgThread, true);
+                bool attachedTarget = targetThread != 0 && targetThread != myThread && targetThread != fgThread &&
+                                      AttachThreadInput(myThread, targetThread, true);
+                try
+                {
+                    BringWindowToTop(root);
+                    SetForegroundWindow(root);
+                    if (hWnd != root) SetFocus(hWnd);
+                }
+                finally
+                {
+                    if (attachedTarget) AttachThreadInput(myThread, targetThread, false);
+                    if (attachedFg) AttachThreadInput(myThread, fgThread, false);
                 }
 
-                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())
-                {
-                    return (resp.StatusCode == HttpStatusCode.OK);
-                }
+                return GetForegroundWindow() == root;
             }
             catch
             {
@@ -181,32 +311,18 @@ namespace EBSBrowser
         }
 
         /// <summary>
-        /// Tier 1: Direct native C# background HTTP keepalive for China Gas Portal
+        /// Presses Enter through the real input queue (SendInput path), which Java AWT honours
+        /// (unlike PostMessage(WM_KEYDOWN) to a Java top-level window, which AWT ignores).
+        /// Caller MUST verify the foreground window first.
         /// </summary>
-        public static void SendNativePortalPing()
+        public static void PressEnter()
         {
-            try
-            {
-                ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
-                string portalUrl = "https://portal.chinagasholdings.com/group/frontend?_ka=" + Environment.TickCount;
-                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(portalUrl);
-                req.Method = "GET";
-                req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko";
-                req.Timeout = 6000;
-
-                int size = 4096;
-                StringBuilder sb = new StringBuilder(size);
-                if (InternetGetCookieEx("https://portal.chinagasholdings.com/", null, sb, ref size, INTERNET_COOKIE_HTTPONLY, IntPtr.Zero))
-                {
-                    req.Headers.Add("Cookie", sb.ToString());
-                }
-
-                using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse()) { }
-            }
-            catch
-            {
-            }
+            keybd_event(VK_RETURN, 0x1C, 0, 0);
+            System.Threading.Thread.Sleep(40);
+            keybd_event(VK_RETURN, 0x1C, KEYEVENTF_KEYUP, 0);
         }
+
+        #endregion
 
         /// <summary>
         /// Tier 2: Real Forms activity pulse down to SunAwtCanvas and SunAwtFrame message pump
@@ -255,9 +371,8 @@ namespace EBSBrowser
                             return true;
                         }, IntPtr.Zero);
 
-                        // 3. Foreground micro pulse
-                        keybd_event(VK_SHIFT, 0, 0, 0);
-                        keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0);
+                        // NOTE: the former global keybd_event(Shift) "foreground pulse" was removed:
+                        // it injected keystrokes into whatever app the user was typing in.
 
                         pulsedCount++;
                     }
@@ -453,13 +568,26 @@ namespace EBSBrowser
             return "UnknownModule";
         }
 
+        private static readonly object logLock = new object();
+
         public static void Log(string category, string message)
         {
             try
             {
                 string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
                 string line = string.Format("[{0:yyyy-MM-dd HH:mm:ss.fff}] [{1}] {2}\r\n", DateTime.Now, category, message);
-                System.IO.File.AppendAllText(path, line);
+                lock (logLock)
+                {
+                    // Rotate at 5 MB so long-running sessions never fill the disk
+                    System.IO.FileInfo fi = new System.IO.FileInfo(path);
+                    if (fi.Exists && fi.Length > 5 * 1024 * 1024)
+                    {
+                        string old = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.old.log");
+                        if (System.IO.File.Exists(old)) System.IO.File.Delete(old);
+                        System.IO.File.Move(path, old);
+                    }
+                    System.IO.File.AppendAllText(path, line, Encoding.UTF8);
+                }
             }
             catch {}
         }

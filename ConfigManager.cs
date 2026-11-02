@@ -12,6 +12,8 @@ namespace EBSBrowser
         public bool AutoFillLogin { get; set; }
         public string SavedUsername { get; set; }
         public string SavedPasswordCipher { get; set; }
+        /// <summary>Allow SessionGuard to auto-click 【是】 and auto-submit the re-login page once the session is confirmed expired.</summary>
+        public bool AutoRescue { get; set; }
 
         public AppConfig()
         {
@@ -22,6 +24,7 @@ namespace EBSBrowser
             AutoFillLogin = true;
             SavedUsername = "";
             SavedPasswordCipher = "";
+            AutoRescue = true;
         }
     }
 
@@ -95,6 +98,14 @@ namespace EBSBrowser
                             {
                                 config.SavedPasswordCipher = val;
                             }
+                            else if (key.Equals("AutoRescue", StringComparison.OrdinalIgnoreCase))
+                            {
+                                bool ar;
+                                if (bool.TryParse(val, out ar))
+                                {
+                                    config.AutoRescue = ar;
+                                }
+                            }
                         }
                     }
                 }
@@ -120,7 +131,8 @@ namespace EBSBrowser
                                  "KeepAliveMinutes=" + config.KeepAliveMinutes + "\r\n" +
                                  "AutoFillLogin=" + config.AutoFillLogin.ToString().ToLower() + "\r\n" +
                                  "SavedUsername=" + config.SavedUsername + "\r\n" +
-                                 "SavedPasswordCipher=" + config.SavedPasswordCipher + "\r\n";
+                                 "SavedPasswordCipher=" + config.SavedPasswordCipher + "\r\n" +
+                                 "AutoRescue=" + config.AutoRescue.ToString().ToLower() + "\r\n";
                 File.WriteAllText(ConfigPath, content, System.Text.Encoding.UTF8);
             }
             catch

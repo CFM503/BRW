@@ -48,7 +48,7 @@ namespace EBSBrowser
 
             // 心跳保活时间独立成行，高分屏文字完整展示不遮挡
             Label lblKeepAlive = new Label() { Text = "保活心跳:", Location = new Point(25, 143), AutoSize = true };
-            numKeepAlive = new NumericUpDown() { Location = new Point(130, 140), Size = new Size(80, 24), Minimum = 1, Maximum = 30, Value = config.KeepAliveMinutes, Increment = 1 };
+            numKeepAlive = new NumericUpDown() { Location = new Point(130, 140), Size = new Size(80, 24), Minimum = 1, Maximum = 10, Value = Math.Max(1, Math.Min(10, config.KeepAliveMinutes)), Increment = 1 };
             Label lblMinutes = new Label() { Text = "分钟 (系统后台自动向 EBS 发送保活心跳防掉线)", Location = new Point(215, 143), AutoSize = true };
 
             // --- 账号密码安全凭据存储 ---

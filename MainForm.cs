@@ -6,7 +6,7 @@ namespace EBSBrowser
 {
     public class MainForm : Form
     {
-        public const string AppVersion = "1.0.9";
+        public const string AppVersion = "1.1.0";
         private AppConfig config;
         private TabControl tabControl;
 
@@ -33,6 +33,7 @@ namespace EBSBrowser
         private int currentZoom = 100;
         private Timer keepAliveTimer;
         private bool isKeepAliveEnabled = true;
+        private NotifyIcon trayIcon;
 
         public MainForm(string initialUrl = null)
         {
@@ -224,13 +225,93 @@ namespace EBSBrowser
 
             // Initialize Keep-Alive timer
             keepAliveTimer = new Timer();
-            keepAliveTimer.Interval = Math.Max(1, config.KeepAliveMinutes) * 60 * 1000;
+            keepAliveTimer.Interval = KeepAliveIntervalMs();
             keepAliveTimer.Tick += KeepAliveTimer_Tick;
             keepAliveTimer.Start();
 
+            // Tray icon used for balloon alerts when the session state changes
+            try
+            {
+                trayIcon = new NotifyIcon();
+                trayIcon.Icon = this.Icon ?? SystemIcons.Application;
+                trayIcon.Text = "EBS 专用工作台";
+                trayIcon.Visible = true;
+                trayIcon.DoubleClick += delegate { this.WindowState = FormWindowState.Normal; this.Activate(); };
+            }
+            catch {}
+
+            // Real keep-alive verdicts -> status bar
+            KeepAliveService.StateChecked += KeepAliveService_StateChecked;
+
             // Start Tier 3 Intelligent Session Guard
             SessionGuard.OnSessionRescued += SessionGuard_OnSessionRescued;
+            SessionGuard.OnSessionExpired += SessionGuard_OnSessionExpired;
             SessionGuard.Start(config);
+            NativeMethods.Log("Startup", string.Format("v{0} keep-alive every {1} min, AutoRescue={2}", AppVersion, KeepAliveIntervalMs() / 60000, config.AutoRescue));
+        }
+
+        private int KeepAliveIntervalMs()
+        {
+            return Math.Max(1, Math.Min(10, config.KeepAliveMinutes)) * 60 * 1000;
+        }
+
+        private void ShowBalloon(string title, string text, ToolTipIcon icon)
+        {
+            try
+            {
+                if (trayIcon != null) trayIcon.ShowBalloonTip(8000, title, text, icon);
+            }
+            catch {}
+        }
+
+        private void KeepAliveService_StateChecked(SessionState oldState, SessionState newState)
+        {
+            try
+            {
+                if (this.IsDisposed || !this.IsHandleCreated) return;
+                this.BeginInvoke(new Action(UpdateKeepAliveStatus));
+            }
+            catch {}
+        }
+
+        private void UpdateKeepAliveStatus()
+        {
+            SessionState s = KeepAliveService.State;
+            string tip = string.Format("上次检测: {0:yyyy-MM-dd HH:mm:ss}\r\n上次确认在线: {1}\r\nEBS 地址: {2}\r\n结果: {3}\r\n（点击可立即检测一次）",
+                KeepAliveService.LastCheckTime,
+                KeepAliveService.LastAliveTime == DateTime.MinValue ? "无" : KeepAliveService.LastAliveTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                KeepAliveService.EbsBase + (KeepAliveService.EbsSeen ? "" : " (默认, 尚未打开 EBS)"),
+                KeepAliveService.LastDetail);
+            lblKeepAlive.ToolTipText = tip;
+            switch (s)
+            {
+                case SessionState.Alive:
+                    lblKeepAlive.Text = string.Format("⚡ EBS 会话在线 (已确认 {0:HH:mm})", KeepAliveService.LastAliveTime);
+                    lblKeepAlive.ForeColor = Color.FromArgb(16, 128, 64);
+                    break;
+                case SessionState.Expired:
+                    lblKeepAlive.Text = string.Format("⛔ EBS 会话已失效 ({0:HH:mm})", KeepAliveService.LastCheckTime);
+                    lblKeepAlive.ForeColor = Color.FromArgb(200, 30, 30);
+                    break;
+                default:
+                    lblKeepAlive.Text = string.Format("⚡ 防超时: 待确认 ({0:HH:mm})", KeepAliveService.LastCheckTime);
+                    lblKeepAlive.ForeColor = Color.FromArgb(160, 110, 0);
+                    break;
+            }
+        }
+
+        private void SessionGuard_OnSessionExpired(string msg)
+        {
+            try
+            {
+                this.BeginInvoke(new Action(delegate
+                {
+                    UpdateKeepAliveStatus();
+                    lblStatus.Text = msg;
+                    ShowBalloon("EBS 会话已失效", config.AutoRescue ? "正在尝试自动恢复（点击【是】并重新登录）…" : "请手动点击【是】重新登录。", ToolTipIcon.Warning);
+                }));
+            }
+            catch {}
         }
 
         private void SessionGuard_OnSessionRescued(string msg)
@@ -239,9 +320,10 @@ namespace EBSBrowser
             {
                 this.BeginInvoke(new Action(delegate
                 {
-                    lblKeepAlive.Text = "⚡ [已自动续订] " + msg;
+                    lblKeepAlive.Text = "⚡ " + msg;
                     lblKeepAlive.ForeColor = Color.FromArgb(0, 102, 204);
                     lblStatus.Text = msg;
+                    ShowBalloon("EBS 会话看护", msg, ToolTipIcon.Info);
                 }));
             }
             catch
@@ -275,6 +357,7 @@ namespace EBSBrowser
                 if (args.Url != null)
                 {
                     NativeMethods.Log("Navigated", string.Format("Tab '{0}' navigated to: {1}", page.Text, args.Url));
+                    KeepAliveService.ObserveUrl(args.Url);
                     if (tabControl.SelectedTab == page)
                     {
                         txtUrl.Text = args.Url.ToString();
@@ -654,7 +737,7 @@ namespace EBSBrowser
                     config = ConfigManager.Load();
                     this.Text = config.AppTitle;
                     SetZoom(config.DefaultZoom);
-                    keepAliveTimer.Interval = Math.Max(1, config.KeepAliveMinutes) * 60 * 1000;
+                    keepAliveTimer.Interval = KeepAliveIntervalMs();
                     SessionGuard.UpdateConfig(config);
 
                     // If credentials were just saved, attempt auto-fill on active browser
@@ -678,6 +761,8 @@ namespace EBSBrowser
                 string url = targetBrowser.Url.ToString().ToLower();
                 if (url.IndexOf("portal.chinagasholdings.com", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     url.IndexOf("login", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    url.IndexOf("/sso/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    url.IndexOf("/OA_HTML/", StringComparison.OrdinalIgnoreCase) >= 0 ||
                     url.IndexOf("frontend", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     string plainPassword = CredentialManager.DecryptPassword(config.SavedPasswordCipher);
@@ -707,10 +792,39 @@ namespace EBSBrowser
                         "    pwdInp.value = pwd;" +
                         "    var pevt1 = document.createEvent('HTMLEvents'); pevt1.initEvent('input', true, true); pwdInp.dispatchEvent(pevt1);" +
                         "    var pevt2 = document.createEvent('HTMLEvents'); pevt2.initEvent('change', true, true); pwdInp.dispatchEvent(pevt2);" +
+                        "    return 'filled';" +
                         "  }" +
                         "}catch(e){}" +
+                        "return '';" +
                         "})();";
-                    targetBrowser.Document.InvokeScript("eval", new object[] { script });
+                    object filled = targetBrowser.Document.InvokeScript("eval", new object[] { script });
+
+                    // During an active session rescue (after 【是】 was clicked), also submit the form,
+                    // limited per episode so a wrong password can never lock the account.
+                    if ("filled".Equals(filled as string) && SessionGuard.IsRescueActive && SessionGuard.TryConsumeLoginSubmit())
+                    {
+                        string submitScript = "(function(){" +
+                            "try{" +
+                            "  var p = document.querySelector('input[type=\"password\"]');" +
+                            "  if(!p) return '';" +
+                            "  var f = p.form;" +
+                            "  var root = f || document;" +
+                            "  var btn = root.querySelector('input[type=\"submit\"], button[type=\"submit\"], input[type=\"image\"]');" +
+                            "  if(!btn){" +
+                            "    var cands = root.querySelectorAll('button, input[type=\"button\"], a');" +
+                            "    for(var i=0;i<cands.length;i++){" +
+                            "      var t = (cands[i].innerText || cands[i].value || '');" +
+                            "      if(/登录|登 录|Login|Log In|Sign In/i.test(t)){ btn = cands[i]; break; }" +
+                            "    }" +
+                            "  }" +
+                            "  if(btn){ btn.click(); return 'clicked'; }" +
+                            "  if(f){ f.submit(); return 'submitted'; }" +
+                            "}catch(e){}" +
+                            "return '';" +
+                            "})();";
+                        object r = targetBrowser.Document.InvokeScript("eval", new object[] { submitScript });
+                        SessionGuard.NotifyLoginSubmitted(targetBrowser.Url + " => " + (r ?? ""));
+                    }
                 }
             }
             catch
@@ -734,12 +848,8 @@ namespace EBSBrowser
             {
                 NativeMethods.PreventSleep();
 
-                // 1. Native C# background HTTP keepalive to refresh database ICX_SESSIONS timestamp directly
-                System.Threading.ThreadPool.QueueUserWorkItem(delegate
-                {
-                    NativeMethods.SendNativeEbsPing();
-                    NativeMethods.SendNativePortalPing();
-                });
+                // 1. Verified keep-alive: native ping (with real result) + hidden EBS home page refresh
+                KeepAliveService.RunCycle(this);
 
                 // 2. Forms AWT Canvas and input message pump pulse
                 int pulsedForms = NativeMethods.PulseFormsActivity();
@@ -755,9 +865,8 @@ namespace EBSBrowser
                     }
                 }
 
-                string formsStatus = pulsedForms > 0 ? string.Format("Forms在线({0})", pulsedForms) : "未检测到Forms";
-                lblKeepAlive.Text = string.Format("⚡ 防超时: 在线 ({0:HH:mm} | {1})", DateTime.Now, formsStatus);
-                lblKeepAlive.ToolTipText = string.Format("上次保活运行: {0:yyyy-MM-dd HH:mm:ss}\r\n- 底层C#与数据库会话直接续订: 成功\r\n- Web页签会话刷新数: {1}\r\n- Forms业务窗口看护数: {2}\r\n- 智能会话看护防掉线引擎: 运行中\r\n（点击可立即手动执行一次保活）", DateTime.Now, pingedTabs, pulsedForms);
+                // Status text is updated with the REAL result when the ping completes (UpdateKeepAliveStatus)
+                lblStatus.Text = string.Format("保活已执行 {0:HH:mm:ss}：页签 {1} 个，Forms 窗口 {2} 个，正在验证会话…", DateTime.Now, pingedTabs, pulsedForms);
             }
             catch
             {
@@ -941,6 +1050,12 @@ namespace EBSBrowser
             }
 
             // Legitimate exit allowed
+            try
+            {
+                if (trayIcon != null) { trayIcon.Visible = false; trayIcon.Dispose(); trayIcon = null; }
+                KeepAliveService.DisposeHiddenBrowser();
+            }
+            catch {}
             NativeMethods.AllowProcessExit = true;
             base.OnFormClosing(e);
         }
