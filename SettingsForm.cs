@@ -25,7 +25,7 @@ namespace EBSBrowser
 
         private void InitializeComponent()
         {
-            this.Text = "浏览器与工作台设置 - v1.0.7";
+            this.Text = "浏览器与工作台设置 - v" + MainForm.AppVersion;
             this.ClientSize = new Size(560, 475);
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
@@ -87,9 +87,7 @@ namespace EBSBrowser
             {
                 txtUsername.Text = "";
                 txtPassword.Text = "";
-                config.SavedUsername = "";
-                config.SavedPasswordCipher = "";
-                MessageBox.Show("已清空本地保存的登录凭据。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("已清空输入框中的凭据，请点击“保存设置”使其生效。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             };
 
             Label lblSecurityTip = new Label()

@@ -39,13 +39,13 @@ class PatchPE
                     System.Threading.Thread.Sleep(200);
                 }
             }
-            Console.WriteLine("[DEP/ASLR优化警告] 写入超时");
-            return 0;
+            Console.WriteLine("[DEP/ASLR优化错误] 写入超时");
+            return 1;
         }
         catch (Exception ex)
         {
-            Console.WriteLine("[DEP优化警告] " + ex.Message);
-            return 0;
+            Console.WriteLine("[DEP优化错误] " + ex.Message);
+            return 1;
         }
     }
 }

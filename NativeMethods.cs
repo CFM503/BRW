@@ -19,12 +19,9 @@ namespace EBSBrowser
         public const int INTERNET_COOKIE_HTTPONLY = 0x00002000;
 
         private const byte VK_SHIFT = 0x10;
-        private const byte VK_Y = 0x59;
         private const uint KEYEVENTF_KEYUP = 0x0002;
         private const uint WM_KEYDOWN = 0x0100;
         private const uint WM_KEYUP = 0x0101;
-        private const uint WM_SYSKEYDOWN = 0x0104;
-        private const uint WM_SYSKEYUP = 0x0105;
         private const uint WM_MOUSEMOVE = 0x0200;
 
         [DllImport("wininet.dll", SetLastError = true, CharSet = CharSet.Auto)]
@@ -121,22 +118,38 @@ namespace EBSBrowser
             }
         }
 
-        public static void CleanZombieJavaProcesses()
+        public static void CleanZombieJavaProcesses(bool skipIfOtherBrowserRunning = false)
         {
             try
             {
+                if (skipIfOtherBrowserRunning)
+                {
+                    string selfName = Process.GetCurrentProcess().ProcessName;
+                    Process[] siblings = Process.GetProcessesByName(selfName);
+                    int count = siblings.Length;
+                    foreach (Process s in siblings) s.Dispose();
+                    if (count > 1)
+                    {
+                        Log("Startup", "Detected another EBSBrowser instance running; skipping Java cleanup.");
+                        return;
+                    }
+                }
+
                 string[] processNames = new string[] { "jp2launcher", "java", "javaw" };
                 foreach (string name in processNames)
                 {
                     Process[] procs = Process.GetProcessesByName(name);
                     foreach (Process p in procs)
                     {
-                        try
+                        using (p)
                         {
-                            p.Kill();
-                        }
-                        catch
-                        {
+                            try
+                            {
+                                p.Kill();
+                            }
+                            catch
+                            {
+                            }
                         }
                     }
                 }
@@ -231,6 +244,38 @@ namespace EBSBrowser
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool CloseDesktop(IntPtr hDesktop);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LASTINPUTINFO
+        {
+            public uint cbSize;
+            public uint dwTime;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+        /// <summary>
+        /// Returns seconds elapsed since the last keyboard or mouse input across the session.
+        /// Uses unchecked 32-bit subtraction to handle 49.7-day TickCount wraparound safely.
+        /// </summary>
+        public static double GetUserIdleSeconds()
+        {
+            try
+            {
+                LASTINPUTINFO lii = new LASTINPUTINFO();
+                lii.cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));
+                if (GetLastInputInfo(ref lii))
+                {
+                    uint elapsedMs = unchecked((uint)Environment.TickCount - lii.dwTime);
+                    return elapsedMs / 1000.0;
+                }
+            }
+            catch
+            {
+            }
+            return 0;
+        }
 
         private const byte VK_RETURN = 0x0D;
         private const uint DESKTOP_SWITCHDESKTOP = 0x0100;
@@ -339,10 +384,6 @@ namespace EBSBrowser
                     GetWindowText(hWnd, sb, 256);
                     string title = sb.ToString();
 
-                    StringBuilder sc = new StringBuilder(256);
-                    GetClassName(hWnd, sc, 256);
-                    string cls = sc.ToString();
-
                     if (!string.IsNullOrEmpty(title) &&
                        (title.IndexOf("Oracle Applications", StringComparison.OrdinalIgnoreCase) >= 0 ||
                         title.IndexOf("Oracle Developer Forms", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -412,10 +453,10 @@ namespace EBSBrowser
         public static volatile bool AllowProcessExit = false;
 
         [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern IntPtr AddVectoredExceptionHandler(uint First, VectoredHandlerCallback Handler);
+        private static extern IntPtr SetUnhandledExceptionFilter(UnhandledExceptionFilterCallback lpTopLevelExceptionFilter);
 
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-        private delegate int VectoredHandlerCallback(IntPtr ExceptionInfo);
+        private delegate int UnhandledExceptionFilterCallback(IntPtr ExceptionInfo);
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Ansi)]
         private static extern IntPtr GetModuleHandle(string lpModuleName);
@@ -425,6 +466,12 @@ namespace EBSBrowser
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool VirtualProtect(IntPtr lpAddress, UIntPtr dwSize, uint flNewProtect, out uint lpflOldProtect);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool FlushInstructionCache(IntPtr hProcess, IntPtr lpBaseAddress, UIntPtr dwSize);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool GetModuleHandleEx(uint dwFlags, IntPtr lpModuleName, out IntPtr phModule);
@@ -441,7 +488,8 @@ namespace EBSBrowser
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         private delegate void ExitProcessDelegate(uint uExitCode);
 
-        private static VectoredHandlerCallback vehCallback;
+        private static readonly object exitHookLock = new object();
+        private static UnhandledExceptionFilterCallback uefCallback;
         private static ExitProcessDelegate exitProcessHookDelegate;
         private static byte[] originalExitProcessBytes = new byte[5];
         private static IntPtr pExitProcess = IntPtr.Zero;
@@ -450,9 +498,10 @@ namespace EBSBrowser
         {
             try
             {
-                // 1. Install Vectored Exception Handler (VEH) to log native crashes (Access Violations, DEP, etc.)
-                vehCallback = new VectoredHandlerCallback(OnVectoredException);
-                AddVectoredExceptionHandler(1, vehCallback);
+                // 1. Register top-level unhandled exception filter (only fires for genuinely unhandled crashes,
+                // avoiding First-Chance VEH deadlocks on normal JVM/CLR 0xC0000005 checks).
+                uefCallback = new UnhandledExceptionFilterCallback(OnUnhandledNativeException);
+                SetUnhandledExceptionFilter(uefCallback);
 
                 // 2. Install ExitProcess hook to prevent external DLLs / MSHTML from abruptly terminating the browser
                 IntPtr hKernel32 = GetModuleHandle("kernel32.dll");
@@ -475,6 +524,7 @@ namespace EBSBrowser
                         if (VirtualProtect(pExitProcess, (UIntPtr)5, PAGE_EXECUTE_READWRITE, out oldProt))
                         {
                             Marshal.Copy(patch, 0, pExitProcess, 5);
+                            FlushInstructionCache(GetCurrentProcess(), pExitProcess, (UIntPtr)5);
                             VirtualProtect(pExitProcess, (UIntPtr)5, oldProt, out oldProt);
                             Log("System", "ExitProcess hook installed successfully.");
                         }
@@ -487,39 +537,22 @@ namespace EBSBrowser
             }
         }
 
-        private static int OnVectoredException(IntPtr pExceptionInfo)
+        private static int OnUnhandledNativeException(IntPtr pExceptionInfo)
         {
             try
             {
                 if (pExceptionInfo == IntPtr.Zero) return 0;
 
-                // ExceptionRecord is at offset 0
                 IntPtr pRecord = Marshal.ReadIntPtr(pExceptionInfo, 0);
                 if (pRecord == IntPtr.Zero) return 0;
 
                 uint code = (uint)Marshal.ReadInt32(pRecord, 0);
-                // Filter out non-fatal / expected debug & RPC exceptions
-                if (code == 0x406D1388 || code == 0x000006BA || code == 0xE0434352 || code == 0x8007000E)
-                {
-                    return 0; // EXCEPTION_CONTINUE_SEARCH
-                }
+                IntPtr addr = Marshal.ReadIntPtr(pRecord, 12); // ExceptionAddress (32-bit x86)
+                string modName = GetModuleNameFromAddress(addr);
 
-                // Log fatal errors (0xC0000005 = Access Violation, 0xC00000FD = Stack Overflow, 0xC0000409 = FastFail)
-                if (code == 0xC0000005 || code == 0xC00000FD || code == 0xC0000409 || code == 0xC000001D)
-                {
-                    IntPtr addr = Marshal.ReadIntPtr(pRecord, 12); // ExceptionAddress
-                    string modName = GetModuleNameFromAddress(addr);
-
-                    string msg = string.Format("[VEH FATAL EXCEPTION] Code: 0x{0:X8}, Address: 0x{1:X8}, Module: {2}", code, (int)addr, modName);
-                    Log("NativeCrash", msg);
-
-                    try
-                    {
-                        string crashPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log");
-                        System.IO.File.AppendAllText(crashPath, string.Format("[{0:yyyy-MM-dd HH:mm:ss}] {1}\r\n", DateTime.Now, msg));
-                    }
-                    catch {}
-                }
+                string msg = string.Format("[UNHANDLED NATIVE CRASH] Code: 0x{0:X8}, Address: 0x{1:X8}, Module: {2}", code, (int)addr, modName);
+                Log("NativeCrash", msg);
+                AppendRotatedLog("crash.log", string.Format("[{0:yyyy-MM-dd HH:mm:ss}] {1}\r\n", DateTime.Now, msg));
             }
             catch {}
             return 0; // EXCEPTION_CONTINUE_SEARCH
@@ -532,11 +565,16 @@ namespace EBSBrowser
                 if (AllowProcessExit)
                 {
                     Log("ExitProcess", string.Format("Legitimate exit confirmed with code {0}. Exiting cleanly.", uExitCode));
-                    // Restore original bytes and exit
-                    uint oldProt;
-                    VirtualProtect(pExitProcess, (UIntPtr)5, PAGE_EXECUTE_READWRITE, out oldProt);
-                    Marshal.Copy(originalExitProcessBytes, 0, pExitProcess, 5);
-                    VirtualProtect(pExitProcess, (UIntPtr)5, oldProt, out oldProt);
+                    lock (exitHookLock)
+                    {
+                        uint oldProt;
+                        if (VirtualProtect(pExitProcess, (UIntPtr)5, PAGE_EXECUTE_READWRITE, out oldProt))
+                        {
+                            Marshal.Copy(originalExitProcessBytes, 0, pExitProcess, 5);
+                            FlushInstructionCache(GetCurrentProcess(), pExitProcess, (UIntPtr)5);
+                            VirtualProtect(pExitProcess, (UIntPtr)5, oldProt, out oldProt);
+                        }
+                    }
                     ExitProcess(uExitCode);
                     return;
                 }
@@ -572,17 +610,22 @@ namespace EBSBrowser
 
         public static void Log(string category, string message)
         {
+            string line = string.Format("[{0:yyyy-MM-dd HH:mm:ss.fff}] [{1}] {2}\r\n", DateTime.Now, category, message);
+            AppendRotatedLog("debug.log", line);
+        }
+
+        public static void AppendRotatedLog(string fileName, string line)
+        {
             try
             {
-                string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.log");
-                string line = string.Format("[{0:yyyy-MM-dd HH:mm:ss.fff}] [{1}] {2}\r\n", DateTime.Now, category, message);
+                string path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, fileName);
                 lock (logLock)
                 {
                     // Rotate at 5 MB so long-running sessions never fill the disk
                     System.IO.FileInfo fi = new System.IO.FileInfo(path);
                     if (fi.Exists && fi.Length > 5 * 1024 * 1024)
                     {
-                        string old = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "debug.old.log");
+                        string old = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, fileName + ".old");
                         if (System.IO.File.Exists(old)) System.IO.File.Delete(old);
                         System.IO.File.Move(path, old);
                     }

@@ -1,4 +1,4 @@
-# 中国燃气 - Oracle EBS 专属工作台 (v1.1.0)
+# 中国燃气 - Oracle EBS 专属工作台 (v1.1.1)
 
 [![Release](https://img.shields.io/github/v/release/CFM503/BRW?include_prereleases&style=flat-square)](https://github.com/CFM503/BRW/releases)
 
@@ -6,7 +6,16 @@
 
 ---
 
-## 🆕 v1.1.0 防掉线引擎重构
+## 🆕 v1.1.1 安全与稳定性加固
+
+- **保活 Cookie 路径修复**：按完整路径读取 WinINet Cookie（含 `Path=/OA_HTML` 等子路径 Cookie），解决特定环境下会话探针漏读 Cookie 的误判风险；内部状态改用线程安全快照，关闭防超时后不被在途异步结果覆盖。
+- **用户空闲检测（防打断录入）**：`SessionGuard` 自动点击前检查用户键鼠空闲时长（`forms-frame` 兜底需空闲 `>= 20s`，原生弹窗需 `>= 3s`），并增加同 URL 自动提交去重防抖。
+- **凭据注入与 TLS 安全收紧**：自动填充与自动提交严格校验 `https` 与企业域名白名单（`*.chinagasholdings.com` 或已配置 `HomeUrl`/EBS 主机），完善 JS 字符串转义；HTTPS 证书豁免收窄至受信任企业域名。
+- **底层稳定性与 CI 一致性**：用 `SetUnhandledExceptionFilter` 替代首轮 VEH 托管文件写入避免死锁，`crash.log` 增加 5 MB 轮转；修复多开启动误杀其他浏览器实例 Java 进程及 `TabControl` 粗体 `Font` 句柄泄漏；GitHub Actions 发布流水线补齐 `PatchPE` DEP/ASLR 补丁。
+
+---
+
+## 📜 v1.1.0 防掉线引擎重构
 
 - **真实可验证的保活**：保活结果不再是写死的“成功”。每次心跳都会带上浏览器完整的 EBS Cookie（含 HttpOnly，缓冲区自动扩容），手动跟随重定向，一旦被跳到登录页即判定“会话已失效”。状态栏显示真实状态：🟢 在线 / 🟡 待确认 / 🔴 已失效，鼠标悬停可看详情。
 - **自动识别 EBS 地址**：从页签导航中学习真实的 EBS 主机/端口，不再写死 `ebs.chinagasholdings.com`。

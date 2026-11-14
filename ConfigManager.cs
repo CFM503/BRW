@@ -65,7 +65,7 @@ namespace EBSBrowser
                             else if (key.Equals("DefaultZoom", StringComparison.OrdinalIgnoreCase))
                             {
                                 int z;
-                                if (int.TryParse(val, out z) && z >= 50 && z <= 300)
+                                if (int.TryParse(val, out z) && z >= 50 && z <= 250)
                                 {
                                     config.DefaultZoom = z;
                                 }
@@ -77,7 +77,7 @@ namespace EBSBrowser
                             else if (key.Equals("KeepAliveMinutes", StringComparison.OrdinalIgnoreCase))
                             {
                                 int km;
-                                if (int.TryParse(val, out km) && km >= 1 && km <= 60)
+                                if (int.TryParse(val, out km) && km >= 1 && km <= 10)
                                 {
                                     config.KeepAliveMinutes = km;
                                 }
@@ -120,18 +120,24 @@ namespace EBSBrowser
             return config;
         }
 
+        private static string SanitizeLineValue(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            return value.Replace("\r", "").Replace("\n", "");
+        }
+
         public static void Save(AppConfig config)
         {
             try
             {
                 string content = "# Oracle EBS Dedicated Browser Configuration\r\n" +
-                                 "AppTitle=" + config.AppTitle + "\r\n" +
-                                 "HomeUrl=" + config.HomeUrl + "\r\n" +
+                                 "AppTitle=" + SanitizeLineValue(config.AppTitle) + "\r\n" +
+                                 "HomeUrl=" + SanitizeLineValue(config.HomeUrl) + "\r\n" +
                                  "DefaultZoom=" + config.DefaultZoom + "\r\n" +
                                  "KeepAliveMinutes=" + config.KeepAliveMinutes + "\r\n" +
                                  "AutoFillLogin=" + config.AutoFillLogin.ToString().ToLower() + "\r\n" +
-                                 "SavedUsername=" + config.SavedUsername + "\r\n" +
-                                 "SavedPasswordCipher=" + config.SavedPasswordCipher + "\r\n" +
+                                 "SavedUsername=" + SanitizeLineValue(config.SavedUsername) + "\r\n" +
+                                 "SavedPasswordCipher=" + SanitizeLineValue(config.SavedPasswordCipher) + "\r\n" +
                                  "AutoRescue=" + config.AutoRescue.ToString().ToLower() + "\r\n";
                 File.WriteAllText(ConfigPath, content, System.Text.Encoding.UTF8);
             }

@@ -6,7 +6,7 @@ namespace EBSBrowser
 {
     public class MainForm : Form
     {
-        public const string AppVersion = "1.1.0";
+        public const string AppVersion = "1.1.1";
         private AppConfig config;
         private TabControl tabControl;
 
@@ -34,6 +34,7 @@ namespace EBSBrowser
         private Timer keepAliveTimer;
         private bool isKeepAliveEnabled = true;
         private NotifyIcon trayIcon;
+        private Font boldTabFont;
 
         public MainForm(string initialUrl = null)
         {
@@ -51,12 +52,27 @@ namespace EBSBrowser
             InitializeComponent();
         }
 
+        private void UpdateWindowTitle(string docTitle = null)
+        {
+            if (string.IsNullOrEmpty(docTitle))
+            {
+                this.Text = string.Format("{0} - [版本: v{1}]", config.AppTitle, AppVersion);
+            }
+            else
+            {
+                this.Text = string.Format("{0} - {1} [版本: v{2}]", docTitle, config.AppTitle, AppVersion);
+            }
+        }
+
         private void InitializeComponent()
         {
-            this.Text = string.Format("{0} - [版本: v{1}]", config.AppTitle, AppVersion);
-            this.Size = new Size(1300, 850);
+            UpdateWindowTitle();
+            this.AutoScaleMode = AutoScaleMode.Font;
+            Rectangle wa = Screen.PrimaryScreen.WorkingArea;
+            this.Size = new Size(Math.Min(1300, Math.Max(900, wa.Width - 40)), Math.Min(850, Math.Max(640, wa.Height - 40)));
             this.StartPosition = FormStartPosition.CenterScreen;
             this.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            this.boldTabFont = new Font(this.Font, FontStyle.Bold);
             this.KeyPreview = true;
             this.KeyDown += MainForm_KeyDown;
 
@@ -220,6 +236,8 @@ namespace EBSBrowser
 
         private void MainForm_Load(object sender, EventArgs e)
         {
+            KeepAliveService.SetConfiguredHomeUrl(config.HomeUrl);
+
             // Create first tab
             CreateNewTab("中国燃气门户", config.HomeUrl, true);
 
@@ -276,25 +294,27 @@ namespace EBSBrowser
 
         private void UpdateKeepAliveStatus()
         {
-            SessionState s = KeepAliveService.State;
+            if (!isKeepAliveEnabled) return;
+            KeepAliveSnapshot snap = KeepAliveService.GetSnapshot();
+            SessionState s = snap.State;
             string tip = string.Format("上次检测: {0:yyyy-MM-dd HH:mm:ss}\r\n上次确认在线: {1}\r\nEBS 地址: {2}\r\n结果: {3}\r\n（点击可立即检测一次）",
-                KeepAliveService.LastCheckTime,
-                KeepAliveService.LastAliveTime == DateTime.MinValue ? "无" : KeepAliveService.LastAliveTime.ToString("yyyy-MM-dd HH:mm:ss"),
-                KeepAliveService.EbsBase + (KeepAliveService.EbsSeen ? "" : " (默认, 尚未打开 EBS)"),
-                KeepAliveService.LastDetail);
+                snap.LastCheckTime,
+                snap.LastAliveTime == DateTime.MinValue ? "无" : snap.LastAliveTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                snap.EbsBase + (snap.EbsSeen ? "" : " (默认, 尚未打开 EBS)"),
+                snap.LastDetail);
             lblKeepAlive.ToolTipText = tip;
             switch (s)
             {
                 case SessionState.Alive:
-                    lblKeepAlive.Text = string.Format("⚡ EBS 会话在线 (已确认 {0:HH:mm})", KeepAliveService.LastAliveTime);
+                    lblKeepAlive.Text = string.Format("⚡ EBS 会话在线 (已确认 {0:HH:mm})", snap.LastAliveTime);
                     lblKeepAlive.ForeColor = Color.FromArgb(16, 128, 64);
                     break;
                 case SessionState.Expired:
-                    lblKeepAlive.Text = string.Format("⛔ EBS 会话已失效 ({0:HH:mm})", KeepAliveService.LastCheckTime);
+                    lblKeepAlive.Text = string.Format("⛔ EBS 会话已失效 ({0:HH:mm})", snap.LastCheckTime);
                     lblKeepAlive.ForeColor = Color.FromArgb(200, 30, 30);
                     break;
                 default:
-                    lblKeepAlive.Text = string.Format("⚡ 防超时: 待确认 ({0:HH:mm})", KeepAliveService.LastCheckTime);
+                    lblKeepAlive.Text = string.Format("⚡ 防超时: 待确认 ({0:HH:mm})", snap.LastCheckTime);
                     lblKeepAlive.ForeColor = Color.FromArgb(160, 110, 0);
                     break;
             }
@@ -392,7 +412,7 @@ namespace EBSBrowser
                     page.Text = tabText;
                     if (tabControl.SelectedTab == page)
                     {
-                        this.Text = string.Format("{0} - {1} (v{2})", docTitle, config.AppTitle, AppVersion);
+                        UpdateWindowTitle(docTitle);
                     }
                 }
             };
@@ -618,7 +638,7 @@ namespace EBSBrowser
             Rectangle textRect = new Rectangle(r.Left + 8, r.Top + 4, r.Width - 32, r.Height - 6);
             TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis;
             Color textColor = isSelected ? Color.FromArgb(15, 23, 42) : Color.FromArgb(100, 116, 139);
-            Font textFont = isSelected ? new Font(this.Font, FontStyle.Bold) : this.Font;
+            Font textFont = isSelected ? (boldTabFont ?? this.Font) : this.Font;
             TextRenderer.DrawText(e.Graphics, page.Text, textFont, textRect, textColor, flags);
 
             // Close button [x]
@@ -660,10 +680,7 @@ namespace EBSBrowser
                 btnBack.Enabled = b.CanGoBack;
                 btnForward.Enabled = b.CanGoForward;
                 lblStatus.Text = b.StatusText ?? "就绪";
-                if (!string.IsNullOrEmpty(b.DocumentTitle))
-                {
-                    this.Text = b.DocumentTitle + " - " + config.AppTitle;
-                }
+                UpdateWindowTitle(b.DocumentTitle);
             }
         }
 
@@ -735,19 +752,33 @@ namespace EBSBrowser
                 if (sf.ShowDialog(this) == DialogResult.OK)
                 {
                     config = ConfigManager.Load();
-                    this.Text = config.AppTitle;
+                    KeepAliveService.SetConfiguredHomeUrl(config.HomeUrl);
+                    ExtendedWebBrowser cur = GetCurrentBrowser();
+                    UpdateWindowTitle(cur != null ? cur.DocumentTitle : null);
                     SetZoom(config.DefaultZoom);
                     keepAliveTimer.Interval = KeepAliveIntervalMs();
                     SessionGuard.UpdateConfig(config);
 
                     // If credentials were just saved, attempt auto-fill on active browser
-                    ExtendedWebBrowser cur = GetCurrentBrowser();
                     if (cur != null)
                     {
                         TryAutoFillCredentials(cur);
                     }
                 }
             }
+        }
+
+        private static string EscapeJsString(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return s.Replace("\\", "\\\\")
+                    .Replace("'", "\\'")
+                    .Replace("\"", "\\\"")
+                    .Replace("\r", "\\r")
+                    .Replace("\n", "\\n")
+                    .Replace("\t", "\\t")
+                    .Replace("\u2028", "\\u2028")
+                    .Replace("\u2029", "\\u2029");
         }
 
         private void TryAutoFillCredentials(ExtendedWebBrowser targetBrowser)
@@ -758,72 +789,71 @@ namespace EBSBrowser
                 if (string.IsNullOrEmpty(config.SavedUsername) || string.IsNullOrEmpty(config.SavedPasswordCipher)) return;
                 if (targetBrowser == null || targetBrowser.Document == null || targetBrowser.Url == null) return;
 
-                string url = targetBrowser.Url.ToString().ToLower();
-                if (url.IndexOf("portal.chinagasholdings.com", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    url.IndexOf("login", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    url.IndexOf("/sso/", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    url.IndexOf("/OA_HTML/", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    url.IndexOf("frontend", StringComparison.OrdinalIgnoreCase) >= 0)
+                // Strictly verify scheme + enterprise domain allowlist before injecting credentials
+                if (!KeepAliveService.IsTrustedCredentialUri(targetBrowser.Url)) return;
+
+                string plainPassword = CredentialManager.DecryptPassword(config.SavedPasswordCipher);
+                if (string.IsNullOrEmpty(plainPassword)) return;
+
+                string safeUser = EscapeJsString(config.SavedUsername);
+                string safePwd = EscapeJsString(plainPassword);
+
+                string script = "(function(){" +
+                    "try{" +
+                    "  var user = '" + safeUser + "';" +
+                    "  var pwd = '" + safePwd + "';" +
+                    "  var pwdInputs = document.querySelectorAll('input[type=\"password\"]');" +
+                    "  if(pwdInputs.length > 0){" +
+                    "    var pwdInp = pwdInputs[0];" +
+                    "    var form = pwdInp.form || document;" +
+                    "    var txtInputs = form.querySelectorAll('input[type=\"text\"], input:not([type])');" +
+                    "    for(var i=0; i<txtInputs.length; i++){" +
+                    "      var inp = txtInputs[i];" +
+                    "      if(inp.offsetParent !== null && !inp.readOnly && !inp.disabled){" +
+                    "        inp.value = user;" +
+                    "        var evt1 = document.createEvent('HTMLEvents'); evt1.initEvent('input', true, true); inp.dispatchEvent(evt1);" +
+                    "        var evt2 = document.createEvent('HTMLEvents'); evt2.initEvent('change', true, true); inp.dispatchEvent(evt2);" +
+                    "        break;" +
+                    "      }" +
+                    "    }" +
+                    "    pwdInp.value = pwd;" +
+                    "    var pevt1 = document.createEvent('HTMLEvents'); pevt1.initEvent('input', true, true); pwdInp.dispatchEvent(pevt1);" +
+                    "    var pevt2 = document.createEvent('HTMLEvents'); pevt2.initEvent('change', true, true); pwdInp.dispatchEvent(pevt2);" +
+                    "    return 'filled';" +
+                    "  }" +
+                    "}catch(e){}" +
+                    "return '';" +
+                    "})();";
+                object filled = targetBrowser.Document.InvokeScript("eval", new object[] { script });
+
+                // During an active session rescue (after 【是】 was clicked), also submit the form,
+                // limited per episode so a wrong password can never lock the account.
+                string pageUrl = targetBrowser.Url.AbsoluteUri;
+                if ("filled".Equals(filled as string) && SessionGuard.IsRescueActive && SessionGuard.TryConsumeLoginSubmit(pageUrl))
                 {
-                    string plainPassword = CredentialManager.DecryptPassword(config.SavedPasswordCipher);
-                    if (string.IsNullOrEmpty(plainPassword)) return;
-
-                    string safeUser = config.SavedUsername.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\"", "\\\"");
-                    string safePwd = plainPassword.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\"", "\\\"");
-
-                    string script = "(function(){" +
+                    string submitScript = "(function(){" +
                         "try{" +
-                        "  var user = '" + safeUser + "';" +
-                        "  var pwd = '" + safePwd + "';" +
-                        "  var pwdInputs = document.querySelectorAll('input[type=\"password\"]');" +
-                        "  if(pwdInputs.length > 0){" +
-                        "    var pwdInp = pwdInputs[0];" +
-                        "    var form = pwdInp.form || document;" +
-                        "    var txtInputs = form.querySelectorAll('input[type=\"text\"], input:not([type])');" +
-                        "    for(var i=0; i<txtInputs.length; i++){" +
-                        "      var inp = txtInputs[i];" +
-                        "      if(inp.offsetParent !== null && !inp.readOnly && !inp.disabled){" +
-                        "        inp.value = user;" +
-                        "        var evt1 = document.createEvent('HTMLEvents'); evt1.initEvent('input', true, true); inp.dispatchEvent(evt1);" +
-                        "        var evt2 = document.createEvent('HTMLEvents'); evt2.initEvent('change', true, true); inp.dispatchEvent(evt2);" +
-                        "        break;" +
-                        "      }" +
+                        "  var p = document.querySelector('input[type=\"password\"]');" +
+                        "  if(!p) return '';" +
+                        "  var f = p.form;" +
+                        "  var root = f || document;" +
+                        "  var btn = root.querySelector('input[type=\"submit\"], button[type=\"submit\"], input[type=\"image\"]');" +
+                        "  if(!btn){" +
+                        "    var cands = root.querySelectorAll('button, input[type=\"button\"], a');" +
+                        "    for(var i=0;i<cands.length;i++){" +
+                        "      var t = (cands[i].innerText || cands[i].value || '');" +
+                        "      if(/登录|登 录|Login|Log In|Sign In/i.test(t)){ btn = cands[i]; break; }" +
                         "    }" +
-                        "    pwdInp.value = pwd;" +
-                        "    var pevt1 = document.createEvent('HTMLEvents'); pevt1.initEvent('input', true, true); pwdInp.dispatchEvent(pevt1);" +
-                        "    var pevt2 = document.createEvent('HTMLEvents'); pevt2.initEvent('change', true, true); pwdInp.dispatchEvent(pevt2);" +
-                        "    return 'filled';" +
                         "  }" +
+                        "  if(btn){ btn.click(); return 'clicked'; }" +
+                        "  if(f){ f.submit(); return 'submitted'; }" +
                         "}catch(e){}" +
                         "return '';" +
                         "})();";
-                    object filled = targetBrowser.Document.InvokeScript("eval", new object[] { script });
-
-                    // During an active session rescue (after 【是】 was clicked), also submit the form,
-                    // limited per episode so a wrong password can never lock the account.
-                    if ("filled".Equals(filled as string) && SessionGuard.IsRescueActive && SessionGuard.TryConsumeLoginSubmit())
+                    string submitResult = targetBrowser.Document.InvokeScript("eval", new object[] { submitScript }) as string;
+                    if (submitResult == "clicked" || submitResult == "submitted")
                     {
-                        string submitScript = "(function(){" +
-                            "try{" +
-                            "  var p = document.querySelector('input[type=\"password\"]');" +
-                            "  if(!p) return '';" +
-                            "  var f = p.form;" +
-                            "  var root = f || document;" +
-                            "  var btn = root.querySelector('input[type=\"submit\"], button[type=\"submit\"], input[type=\"image\"]');" +
-                            "  if(!btn){" +
-                            "    var cands = root.querySelectorAll('button, input[type=\"button\"], a');" +
-                            "    for(var i=0;i<cands.length;i++){" +
-                            "      var t = (cands[i].innerText || cands[i].value || '');" +
-                            "      if(/登录|登 录|Login|Log In|Sign In/i.test(t)){ btn = cands[i]; break; }" +
-                            "    }" +
-                            "  }" +
-                            "  if(btn){ btn.click(); return 'clicked'; }" +
-                            "  if(f){ f.submit(); return 'submitted'; }" +
-                            "}catch(e){}" +
-                            "return '';" +
-                            "})();";
-                        object r = targetBrowser.Document.InvokeScript("eval", new object[] { submitScript });
-                        SessionGuard.NotifyLoginSubmitted(targetBrowser.Url + " => " + (r ?? ""));
+                        SessionGuard.NotifyLoginSubmitted(pageUrl + " => " + submitResult);
                     }
                 }
             }
@@ -1058,6 +1088,16 @@ namespace EBSBrowser
             catch {}
             NativeMethods.AllowProcessExit = true;
             base.OnFormClosing(e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && boldTabFont != null)
+            {
+                boldTabFont.Dispose();
+                boldTabFont = null;
+            }
+            base.Dispose(disposing);
         }
 
         protected override void WndProc(ref Message m)

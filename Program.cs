@@ -28,8 +28,12 @@ namespace EBSBrowser
             // 1. Disable DEP for this 32-bit process so Java 6 JIT & native thunks execute safely
             NativeMethods.DisableDEP();
 
-            // 2. Clean orphaned/hung Java processes from previous crashed sessions
-            NativeMethods.CleanZombieJavaProcesses();
+            // Allow legitimate exits via Application.Exit / Environment.Exit
+            Application.ApplicationExit += delegate { NativeMethods.AllowProcessExit = true; };
+            AppDomain.CurrentDomain.ProcessExit += delegate { NativeMethods.AllowProcessExit = true; };
+
+            // 2. Clean orphaned/hung Java processes unless another EBSBrowser instance is running
+            NativeMethods.CleanZombieJavaProcesses(true);
 
             // 3. Ensure Java 6 bin and client runtime folders are first in process PATH
             try
@@ -63,9 +67,8 @@ namespace EBSBrowser
         {
             try
             {
-                string logPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log");
                 string log = string.Format("[{0:yyyy-MM-dd HH:mm:ss}] {1}: {2}\r\n", DateTime.Now, category, ex != null ? ex.ToString() : "Unknown exception");
-                File.AppendAllText(logPath, log);
+                NativeMethods.AppendRotatedLog("crash.log", log);
                 NativeMethods.Log("ManagedException", log);
             }
             catch

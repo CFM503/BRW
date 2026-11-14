@@ -26,6 +26,8 @@ namespace EBSBrowser
         private const int MaxAttempts = 3;
         private const int AttemptSpacingSeconds = 20;
         private const int RescueWindowMinutes = 5;
+        private const int MinIdleSecondsForFormsFrame = 20;
+        private const int MinIdleSecondsForNativeDialog = 3;
 
         private static Timer guardTimer;
         private static AppConfig currentConfig;
@@ -36,6 +38,9 @@ namespace EBSBrowser
         private static DateTime lastDialogCheckRequest = DateTime.MinValue;
         private static bool episodeNotified = false;
         private static bool lockedNotified = false;
+        private static bool idleSkipNotified = false;
+        private static DateTime lastLoginSubmitTime = DateTime.MinValue;
+        private static string lastLoginSubmitUrl = "";
 
         /// <summary>Raised (UI thread) with a human-readable message whenever the guard acts or needs attention.</summary>
         public static event Action<string> OnSessionRescued;
@@ -93,16 +98,25 @@ namespace EBSBrowser
 
         /// <summary>
         /// Returns true if another automatic login submit is allowed in this expiry episode.
-        /// Hard cap prevents a wrong saved password from locking the account.
+        /// Hard cap prevents a wrong saved password from locking the account, and debounces
+        /// duplicate DocumentCompleted events (e.g. from iframes) for the same URL.
         /// </summary>
-        public static bool TryConsumeLoginSubmit()
+        public static bool TryConsumeLoginSubmit(string url = null)
         {
+            if (!string.IsNullOrEmpty(url) &&
+                string.Equals(url, lastLoginSubmitUrl, StringComparison.OrdinalIgnoreCase) &&
+                (DateTime.Now - lastLoginSubmitTime).TotalSeconds < 4)
+            {
+                return false;
+            }
             if (loginSubmitsThisEpisode >= MaxLoginSubmitsPerEpisode)
             {
                 NativeMethods.Log("SessionGuard", "Auto login submit skipped: limit reached for this episode.");
                 return false;
             }
             loginSubmitsThisEpisode++;
+            lastLoginSubmitTime = DateTime.Now;
+            lastLoginSubmitUrl = url ?? "";
             return true;
         }
 
@@ -231,7 +245,8 @@ namespace EBSBrowser
                 KeepAliveService.CheckNowAsync("decision-dialog");
             }
 
-            SessionState state = KeepAliveService.State;
+            KeepAliveSnapshot snap = KeepAliveService.GetSnapshot();
+            SessionState state = snap.State;
 
             if (state == SessionState.Alive)
             {
@@ -244,25 +259,26 @@ namespace EBSBrowser
                 loginSubmitsThisEpisode = 0;
                 episodeNotified = false;
                 lockedNotified = false;
+                idleSkipNotified = false;
                 return;
             }
 
             if (state != SessionState.Expired) return;
 
             // While expired, re-verify every 30 s (instead of every keep-alive period) for fast reaction
-            if ((DateTime.Now - KeepAliveService.LastCheckTime).TotalSeconds > 30)
+            if ((DateTime.Now - snap.LastCheckTime).TotalSeconds > 30)
             {
                 KeepAliveService.CheckNowAsync("expired-recheck");
             }
 
             // Stale verdicts are not trusted
-            if ((DateTime.Now - KeepAliveService.LastCheckTime).TotalMinutes > 6) return;
+            if ((DateTime.Now - snap.LastCheckTime).TotalMinutes > 6) return;
 
             if (!episodeNotified)
             {
                 episodeNotified = true;
-                NativeMethods.Log("SessionGuard", "Session CONFIRMED expired: " + KeepAliveService.LastDetail);
-                Raise(OnSessionExpired, "EBS 登录会话已失效：" + KeepAliveService.LastDetail);
+                NativeMethods.Log("SessionGuard", "Session CONFIRMED expired: " + snap.LastDetail);
+                Raise(OnSessionExpired, "EBS 登录会话已失效：" + snap.LastDetail);
             }
 
             if (currentConfig == null || !currentConfig.AutoRescue) return;
@@ -273,12 +289,26 @@ namespace EBSBrowser
             // but only after TWO consecutive Expired verdicts to rule out a one-off misjudgement.
             IntPtr target = jw.DecisionDialog;
             string mode = "native-dialog";
+            int requiredIdleSeconds = MinIdleSecondsForNativeDialog;
             if (target == IntPtr.Zero)
             {
-                if (jw.FormsFrame == IntPtr.Zero || KeepAliveService.ConsecutiveExpired < 2) return;
+                if (jw.FormsFrame == IntPtr.Zero || snap.ConsecutiveExpired < 2) return;
                 target = jw.FormsFrame;
                 mode = "forms-frame";
+                requiredIdleSeconds = MinIdleSecondsForFormsFrame;
             }
+
+            double idleSeconds = NativeMethods.GetUserIdleSeconds();
+            if (idleSeconds < requiredIdleSeconds)
+            {
+                if (!idleSkipNotified)
+                {
+                    idleSkipNotified = true;
+                    NativeMethods.Log("SessionGuard", string.Format("User active (idle={0:F1}s < {1}s), deferring auto-Enter ({2}).", idleSeconds, requiredIdleSeconds, mode));
+                }
+                return;
+            }
+            idleSkipNotified = false;
 
             if (NativeMethods.IsDesktopLocked())
             {

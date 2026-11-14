@@ -10,7 +10,8 @@ namespace EBSBrowser
     {
         private AxHost.ConnectionPointCookie cookie;
         private WebBrowserExtendedEvents events;
-        private long lastNewWindowTicks = 0;
+
+        public bool SuppressDialogs { get; set; }
 
         public event EventHandler<NewWindow2EventArgs> NewWindow2Event;
         public event EventHandler<NewWindow3EventArgs> NewWindow3Event;
@@ -78,7 +79,7 @@ namespace EBSBrowser
                 {
                     object pvaIn = percent;
                     object pvaOut = null;
-                    ax.GetType().InvokeMember("ExecWB", BindingFlags.InvokeMethod, null, ax, new object[] { 63, 2, pvaIn, pvaOut });
+                    ax.GetType().InvokeMember("ExecWB", BindingFlags.InvokeMethod, null, ax, new object[] { NativeMethods.OLECMDID_OPTICAL_ZOOM, NativeMethods.OLECMDEXECOPT_DONTPROMPTUSER, pvaIn, pvaOut });
                 }
             }
             catch
@@ -100,8 +101,6 @@ namespace EBSBrowser
 
         internal void OnNewWindow3(ref object ppDisp, ref bool cancel, uint dwFlags, string bstrUrlContext, string bstrUrl)
         {
-            lastNewWindowTicks = Environment.TickCount;
-
             EventHandler<NewWindow3EventArgs> handler = NewWindow3Event;
             if (handler != null)
             {
@@ -159,7 +158,12 @@ namespace EBSBrowser
             [DllImport("user32.dll", CharSet = CharSet.Unicode)]
             private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
 
-            public CustomWebBrowserSite(WebBrowser host) : base(host) { }
+            private ExtendedWebBrowser hostBrowser;
+
+            public CustomWebBrowserSite(ExtendedWebBrowser host) : base(host)
+            {
+                this.hostBrowser = host;
+            }
 
             public int QueryStatus(ref Guid pguidCmdGroup, uint cCmds, IntPtr prgCmds, IntPtr pCmdText)
             {
@@ -189,6 +193,11 @@ namespace EBSBrowser
             {
                 try
                 {
+                    if (hostBrowser != null && hostBrowser.SuppressDialogs)
+                    {
+                        lpResult = 1; // IDOK
+                        return 0;
+                    }
                     // Preserve genuine webpage alert / confirm dialogs if needed
                     string caption = string.IsNullOrEmpty(lpstrCaption) ? "系统提示" : lpstrCaption;
                     lpResult = MessageBoxW(hwnd, lpstrText, caption, dwType);

@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -14,11 +17,22 @@ namespace EBSBrowser
         Expired    // EBS redirected to a login page => ICX session is dead
     }
 
+    public sealed class KeepAliveSnapshot
+    {
+        public SessionState State { get; set; }
+        public DateTime LastCheckTime { get; set; }
+        public DateTime LastAliveTime { get; set; }
+        public string LastDetail { get; set; }
+        public int ConsecutiveExpired { get; set; }
+        public string EbsBase { get; set; }
+        public bool EbsSeen { get; set; }
+    }
+
     /// <summary>
     /// Tier 1 keep-alive with REAL verification.
     /// - Discovers the actual EBS host from tab navigations (no hard-coded host).
     /// - Native C# ping with full WinINet cookies, manual redirects and login-page detection.
-    /// - A hidden WebBrowser that periodically loads the EBS home page using the very same
+    /// - A hidden ExtendedWebBrowser that periodically loads the EBS home page using the very same
     ///   WinINet cookie jar as the Forms applet (most faithful way to refresh ICX_SESSIONS).
     /// </summary>
     public static class KeepAliveService
@@ -28,36 +42,132 @@ namespace EBSBrowser
         private const string HomePath = "/OA_HTML/OA.jsp?OAFunc=OANEWHOMEPAGE";
 
         private static readonly object sync = new object();
+        private static readonly HashSet<string> warnedCertHosts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private static string ebsBase;              // discovered scheme://host[:port]
+        private static string configuredHomeUrl;    // user-configured portal HomeUrl
         private static int pingRunning = 0;
         private static int consecutiveExpired = 0;
+        private static bool tlsConfigured = false;
 
-        private static WebBrowser hiddenBrowser;
+        private static ExtendedWebBrowser hiddenBrowser;
         private static string hiddenHost;
 
-        public static SessionState State { get; private set; }
-        public static DateTime LastCheckTime { get; private set; }
-        public static DateTime LastAliveTime { get; private set; }
-        public static string LastDetail { get; private set; }
-        public static bool EbsSeen { get { return ebsBase != null; } }
+        private static SessionState state = SessionState.Unknown;
+        private static DateTime lastCheckTime = DateTime.MinValue;
+        private static DateTime lastAliveTime = DateTime.MinValue;
+        private static string lastDetail = "尚未检测";
+
+        public static SessionState State { get { lock (sync) { return state; } } }
+        public static DateTime LastCheckTime { get { lock (sync) { return lastCheckTime; } } }
+        public static DateTime LastAliveTime { get { lock (sync) { return lastAliveTime; } } }
+        public static string LastDetail { get { lock (sync) { return lastDetail; } } }
+        public static bool EbsSeen { get { lock (sync) { return ebsBase != null; } } }
 
         /// <summary>Number of consecutive pings that reported Expired (0 when Alive/Unknown).</summary>
-        public static int ConsecutiveExpired { get { return consecutiveExpired; } }
+        public static int ConsecutiveExpired { get { lock (sync) { return consecutiveExpired; } } }
 
         /// <summary>Raised on a thread-pool thread after every ping. Marshal to UI yourself.</summary>
         public static event Action<SessionState, SessionState> StateChecked;
 
-        static KeepAliveService()
-        {
-            State = SessionState.Unknown;
-            LastCheckTime = DateTime.MinValue;
-            LastAliveTime = DateTime.MinValue;
-            LastDetail = "尚未检测";
-        }
-
         public static string EbsBase
         {
-            get { return ebsBase ?? DefaultEbsBase; }
+            get { lock (sync) { return ebsBase ?? DefaultEbsBase; } }
+        }
+
+        public static KeepAliveSnapshot GetSnapshot()
+        {
+            lock (sync)
+            {
+                return new KeepAliveSnapshot
+                {
+                    State = state,
+                    LastCheckTime = lastCheckTime,
+                    LastAliveTime = lastAliveTime,
+                    LastDetail = lastDetail,
+                    ConsecutiveExpired = consecutiveExpired,
+                    EbsBase = ebsBase ?? DefaultEbsBase,
+                    EbsSeen = ebsBase != null
+                };
+            }
+        }
+
+        public static void SetConfiguredHomeUrl(string homeUrl)
+        {
+            lock (sync)
+            {
+                configuredHomeUrl = homeUrl;
+            }
+        }
+
+        /// <summary>
+        /// Checks whether a host belongs to China Gas enterprise domains or configured portal/EBS hosts.
+        /// </summary>
+        public static bool IsTrustedEnterpriseHost(string host)
+        {
+            if (string.IsNullOrEmpty(host)) return false;
+            if (host.Equals("chinagasholdings.com", StringComparison.OrdinalIgnoreCase) ||
+                host.EndsWith(".chinagasholdings.com", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            string curEbs, curHome;
+            lock (sync)
+            {
+                curEbs = ebsBase;
+                curHome = configuredHomeUrl;
+            }
+
+            Uri u;
+            if (!string.IsNullOrEmpty(curEbs) && Uri.TryCreate(curEbs, UriKind.Absolute, out u) &&
+                host.Equals(u.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if (!string.IsNullOrEmpty(curHome) && Uri.TryCreate(curHome, UriKind.Absolute, out u) &&
+                host.Equals(u.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Checks whether a URI is safe for credential auto-fill / auto-submit.
+        /// Requires HTTPS unless the exact host matches the user's configured HomeUrl or discovered EbsBase.
+        /// </summary>
+        public static bool IsTrustedCredentialUri(Uri uri)
+        {
+            if (uri == null || !uri.IsAbsoluteUri) return false;
+            if (!IsTrustedEnterpriseHost(uri.Host)) return false;
+
+            if (string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if (string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+            {
+                string curEbs, curHome;
+                lock (sync)
+                {
+                    curEbs = ebsBase;
+                    curHome = configuredHomeUrl;
+                }
+                Uri u;
+                if (!string.IsNullOrEmpty(curHome) && Uri.TryCreate(curHome, UriKind.Absolute, out u) &&
+                    string.Equals(u.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(u.Host, uri.Host, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+                if (!string.IsNullOrEmpty(curEbs) && Uri.TryCreate(curEbs, UriKind.Absolute, out u) &&
+                    string.Equals(u.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(u.Host, uri.Host, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>
@@ -108,25 +218,30 @@ namespace EBSBrowser
             {
                 try
                 {
-                    SessionState old = State;
+                    SessionState old;
+                    lock (sync) { old = state; }
                     string detail;
                     SessionState s = PingEbs(out detail);
-                    LastCheckTime = DateTime.Now;
-                    LastDetail = detail;
-                    if (s == SessionState.Alive)
+                    DateTime now = DateTime.Now;
+                    lock (sync)
                     {
-                        LastAliveTime = DateTime.Now;
-                        consecutiveExpired = 0;
+                        lastCheckTime = now;
+                        lastDetail = detail;
+                        if (s == SessionState.Alive)
+                        {
+                            lastAliveTime = now;
+                            consecutiveExpired = 0;
+                        }
+                        else if (s == SessionState.Expired)
+                        {
+                            consecutiveExpired++;
+                        }
+                        else
+                        {
+                            consecutiveExpired = 0;
+                        }
+                        state = s;
                     }
-                    else if (s == SessionState.Expired)
-                    {
-                        consecutiveExpired++;
-                    }
-                    else
-                    {
-                        consecutiveExpired = 0;
-                    }
-                    State = s;
                     NativeMethods.Log("KeepAlive", string.Format("[{0}] EBS ping => {1} ({2})", reason, s, detail));
 
                     PingPortal();
@@ -147,18 +262,56 @@ namespace EBSBrowser
 
         private static void PrepareTls()
         {
-            ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
-            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072 | (SecurityProtocolType)768 | SecurityProtocolType.Tls;
-            ServicePointManager.Expect100Continue = false;
+            lock (sync)
+            {
+                if (tlsConfigured) return;
+                ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072 | (SecurityProtocolType)768 | SecurityProtocolType.Tls;
+                ServicePointManager.Expect100Continue = false;
+                ServicePointManager.ServerCertificateValidationCallback = ValidateEnterpriseCertificate;
+                tlsConfigured = true;
+            }
+        }
+
+        private static bool ValidateEnterpriseCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
+        {
+            if (sslPolicyErrors == SslPolicyErrors.None) return true;
+            HttpWebRequest req = sender as HttpWebRequest;
+            if (req != null && req.Address != null && IsTrustedEnterpriseHost(req.Address.Host))
+            {
+                bool shouldLog = false;
+                lock (warnedCertHosts)
+                {
+                    if (!warnedCertHosts.Contains(req.Address.Host))
+                    {
+                        warnedCertHosts.Add(req.Address.Host);
+                        shouldLog = true;
+                    }
+                }
+                if (shouldLog)
+                {
+                    NativeMethods.Log("TLS", string.Format("Accepted internal/untrusted certificate for trusted enterprise host '{0}' (errors={1}).", req.Address.Host, sslPolicyErrors));
+                }
+                return true;
+            }
+            return false;
         }
 
         private static bool LooksLikeLogin(string url)
         {
             if (string.IsNullOrEmpty(url)) return false;
-            string u = url.ToLowerInvariant();
-            return u.Contains("appslogin") || u.Contains("appslocallogin") || u.Contains("/sso/") ||
-                   u.Contains("fnd/sso") || u.Contains("login") || u.Contains("logout") ||
-                   u.Contains("sessionexpired") || u.Contains("portal.chinagasholdings.com");
+            Uri u;
+            if (Uri.TryCreate(url, UriKind.Absolute, out u))
+            {
+                string host = u.Host.ToLowerInvariant();
+                string path = u.AbsolutePath.ToLowerInvariant();
+                if (host.Contains("portal.chinagasholdings.com") && !path.Contains("oa.jsp")) return true;
+                return path.Contains("appslogin") || path.Contains("appslocallogin") || path.Contains("/sso/") ||
+                       path.Contains("fnd/sso") || path.Contains("login") || path.Contains("logout") ||
+                       path.Contains("sessionexpired");
+            }
+            string raw = url.ToLowerInvariant();
+            return raw.Contains("appslogin") || raw.Contains("appslocallogin") || raw.Contains("/sso/") ||
+                   raw.Contains("fnd/sso") || raw.Contains("sessionexpired");
         }
 
         private static bool BodyLooksLikeLogin(string body)
@@ -186,7 +339,12 @@ namespace EBSBrowser
                 for (int hop = 0; hop < 5; hop++)
                 {
                     Uri uri = new Uri(url);
-                    string cookies = NativeMethods.GetCookies(uri.GetLeftPart(UriPartial.Authority) + "/");
+                    // Query cookies using full path (not just "/") so path-scoped cookies (e.g. Path=/OA_HTML) are included
+                    string cookies = NativeMethods.GetCookies(uri.GetLeftPart(UriPartial.Path));
+                    if (string.IsNullOrEmpty(cookies))
+                    {
+                        cookies = NativeMethods.GetCookies(uri.GetLeftPart(UriPartial.Authority) + "/");
+                    }
                     if (hop == 0)
                     {
                         firstCookies = cookies;
@@ -276,9 +434,27 @@ namespace EBSBrowser
         {
             try
             {
-                string cookies = NativeMethods.GetCookies(PortalBase + "/");
+                PrepareTls();
+                string portalUrl = PortalBase + "/group/frontend";
+                string curHome;
+                lock (sync) { curHome = configuredHomeUrl; }
+                Uri hu;
+                if (!string.IsNullOrEmpty(curHome) && Uri.TryCreate(curHome, UriKind.Absolute, out hu) &&
+                    (hu.Scheme == Uri.UriSchemeHttp || hu.Scheme == Uri.UriSchemeHttps))
+                {
+                    portalUrl = hu.GetLeftPart(UriPartial.Path);
+                }
+
+                string cookies = NativeMethods.GetCookies(portalUrl);
+                if (string.IsNullOrEmpty(cookies))
+                {
+                    Uri pu = new Uri(portalUrl);
+                    cookies = NativeMethods.GetCookies(pu.GetLeftPart(UriPartial.Authority) + "/");
+                }
                 if (string.IsNullOrEmpty(cookies)) return;
-                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(PortalBase + "/group/frontend?_ka=" + DateTime.Now.Ticks);
+
+                string sep = portalUrl.Contains("?") ? "&" : "?";
+                HttpWebRequest req = (HttpWebRequest)WebRequest.Create(portalUrl + sep + "_ka=" + DateTime.Now.Ticks);
                 req.Method = "GET";
                 req.AllowAutoRedirect = false;
                 req.UserAgent = "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko";
@@ -342,8 +518,8 @@ namespace EBSBrowser
 
                 if (hiddenBrowser == null || hiddenBrowser.IsDisposed)
                 {
-                    hiddenBrowser = new WebBrowser();
-                    hiddenBrowser.ScriptErrorsSuppressed = true; // no dialogs from an invisible page
+                    hiddenBrowser = new ExtendedWebBrowser();
+                    hiddenBrowser.SuppressDialogs = true; // no alert/script dialogs from an invisible page
                     hiddenBrowser.Size = new System.Drawing.Size(1, 1);
                     hiddenBrowser.Location = new System.Drawing.Point(-100, -100);
                     hiddenBrowser.TabStop = false;

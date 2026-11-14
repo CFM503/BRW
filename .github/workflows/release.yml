@@ -23,9 +23,19 @@ jobs:
           $csc = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
           Write-Host "Compiling with $csc ..."
           & $csc /target:winexe /platform:x86 /r:System.Security.dll /win32manifest:app.manifest /win32icon:app.ico /out:EBSBrowser.exe *.cs
-          if (-not (Test-Path "EBSBrowser.exe")) {
-            throw "Compilation failed, EBSBrowser.exe not found!"
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path "EBSBrowser.exe")) {
+            throw "Compilation failed!"
           }
+          Write-Host "Patching PE Header for Java 6 DEP/ASLR compatibility..."
+          & $csc /target:exe /out:tools\PatchPE.exe tools\PatchPE.cs
+          if ($LASTEXITCODE -ne 0) {
+            throw "PatchPE compilation failed!"
+          }
+          & .\tools\PatchPE.exe EBSBrowser.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "PatchPE execution failed!"
+          }
+          Remove-Item tools\PatchPE.exe -Force -ErrorAction SilentlyContinue
           $ver = (Get-Item EBSBrowser.exe).VersionInfo
           Write-Host "Compiled successfully: Version $($ver.ProductVersion)"
 
