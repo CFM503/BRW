@@ -16,6 +16,8 @@ namespace EBSBrowser
         private TextBox txtPassword;
         private CheckBox chkAutoFill;
         private Button btnClearCred;
+        private CheckBox chkKeepAliveAllTabs;
+        private TextBox txtKeepAliveDomains;
 
         public SettingsForm(AppConfig currentConfig)
         {
@@ -26,7 +28,7 @@ namespace EBSBrowser
         private void InitializeComponent()
         {
             this.Text = "浏览器与工作台设置 - v" + MainForm.AppVersion;
-            this.ClientSize = new Size(560, 475);
+            this.ClientSize = new Size(560, 545);
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
             this.MinimizeBox = false;
@@ -49,12 +51,28 @@ namespace EBSBrowser
             // 心跳保活时间独立成行，高分屏文字完整展示不遮挡
             Label lblKeepAlive = new Label() { Text = "保活心跳:", Location = new Point(25, 143), AutoSize = true };
             numKeepAlive = new NumericUpDown() { Location = new Point(130, 140), Size = new Size(80, 24), Minimum = 1, Maximum = 10, Value = Math.Max(1, Math.Min(10, config.KeepAliveMinutes)), Increment = 1 };
-            Label lblMinutes = new Label() { Text = "分钟 (系统后台自动向 EBS 发送保活心跳防掉线)", Location = new Point(215, 143), AutoSize = true };
+            Label lblMinutes = new Label() { Text = "分钟 (系统后台自动向分页发送保活心跳防掉线)", Location = new Point(215, 143), AutoSize = true };
+
+            chkKeepAliveAllTabs = new CheckBox()
+            {
+                Text = "对所有打开的网页分页发送通用保活心跳（除 EBS/门户外也保活其他系统）",
+                Location = new Point(130, 174),
+                AutoSize = true,
+                Checked = config.KeepAliveAllTabs
+            };
+
+            Label lblDomains = new Label() { Text = "指定保活域名:", Location = new Point(25, 207), AutoSize = true };
+            txtKeepAliveDomains = new TextBox()
+            {
+                Location = new Point(130, 204),
+                Size = new Size(395, 24),
+                Text = config.KeepAliveDomains ?? ""
+            };
 
             // --- 账号密码安全凭据存储 ---
             GroupBox grpLogin = new GroupBox();
             grpLogin.Text = "门户登录凭据（Windows DPAPI 高强度安全加密保存在本机）";
-            grpLogin.Location = new Point(20, 180);
+            grpLogin.Location = new Point(20, 245);
             grpLogin.Size = new Size(515, 225);
 
             Label lblUser = new Label() { Text = "工号/账号:", Location = new Point(20, 33), AutoSize = true };
@@ -108,10 +126,10 @@ namespace EBSBrowser
             grpLogin.Controls.Add(lblSecurityTip);
 
             // --- 底部按钮 ---
-            Button btnSave = new Button() { Text = "保存设置", DialogResult = DialogResult.OK, Location = new Point(325, 422), Size = new Size(95, 32) };
+            Button btnSave = new Button() { Text = "保存设置", DialogResult = DialogResult.OK, Location = new Point(325, 492), Size = new Size(95, 32) };
             btnSave.Click += BtnSave_Click;
 
-            Button btnCancel = new Button() { Text = "取消", DialogResult = DialogResult.Cancel, Location = new Point(435, 422), Size = new Size(95, 32) };
+            Button btnCancel = new Button() { Text = "取消", DialogResult = DialogResult.Cancel, Location = new Point(435, 492), Size = new Size(95, 32) };
 
             this.Controls.Add(lblTitle);
             this.Controls.Add(txtTitle);
@@ -123,6 +141,9 @@ namespace EBSBrowser
             this.Controls.Add(lblKeepAlive);
             this.Controls.Add(numKeepAlive);
             this.Controls.Add(lblMinutes);
+            this.Controls.Add(chkKeepAliveAllTabs);
+            this.Controls.Add(lblDomains);
+            this.Controls.Add(txtKeepAliveDomains);
             this.Controls.Add(grpLogin);
             this.Controls.Add(btnSave);
             this.Controls.Add(btnCancel);
@@ -143,6 +164,8 @@ namespace EBSBrowser
             }
             config.DefaultZoom = (int)numZoom.Value;
             config.KeepAliveMinutes = (int)numKeepAlive.Value;
+            config.KeepAliveAllTabs = chkKeepAliveAllTabs.Checked;
+            config.KeepAliveDomains = (txtKeepAliveDomains.Text ?? "").Trim();
             config.AutoFillLogin = chkAutoFill.Checked;
 
             // Save encrypted credentials

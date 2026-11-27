@@ -149,8 +149,9 @@ namespace EBSBrowser
 
         #region Custom Site to intercept script errors and retain alerts
 
-        protected class CustomWebBrowserSite : WebBrowserSite, IOleCommandTarget, IDocHostShowUI
+        protected class CustomWebBrowserSite : WebBrowserSite, IDocHostShowUI, ICustomQueryInterface
         {
+            private static readonly Guid IID_IOleCommandTarget = new Guid("b722be7f-4eb0-11b0-b59b-0000f805f530");
             private static readonly Guid CGID_DocHostCommandHandler = new Guid("f38bc242-b950-11d1-8918-00c04fc2c836");
             private const int OLECMDID_SHOWSCRIPTERROR = 40;
             private const int OLECMDERR_E_UNKNOWNGROUP = -2147221248;
@@ -159,34 +160,58 @@ namespace EBSBrowser
             private static extern int MessageBoxW(IntPtr hWnd, string text, string caption, uint type);
 
             private ExtendedWebBrowser hostBrowser;
+            private readonly CommandTargetHandler commandTarget;
 
             public CustomWebBrowserSite(ExtendedWebBrowser host) : base(host)
             {
                 this.hostBrowser = host;
+                this.commandTarget = new CommandTargetHandler();
             }
 
-            public int QueryStatus(ref Guid pguidCmdGroup, uint cCmds, IntPtr prgCmds, IntPtr pCmdText)
+            public CustomQueryInterfaceResult GetInterface(ref Guid iid, out IntPtr ppv)
             {
-                return OLECMDERR_E_UNKNOWNGROUP;
-            }
-
-            public int Exec(ref Guid pguidCmdGroup, uint nCmdID, uint nCmdexecopt, IntPtr pvaIn, IntPtr pvaOut)
-            {
-                try
+                // WebBrowserSite already implements an internal IOleCommandTarget which shadows
+                // a derived IOleCommandTarget during COM QueryInterface. Delegate to a separate
+                // COM object to avoid recursive QI while intercepting OLECMDID_SHOWSCRIPTERROR.
+                if (iid == IID_IOleCommandTarget)
                 {
-                    if (pguidCmdGroup == CGID_DocHostCommandHandler)
+                    ppv = Marshal.GetComInterfaceForObject(commandTarget, typeof(IOleCommandTarget));
+                    return CustomQueryInterfaceResult.Handled;
+                }
+                ppv = IntPtr.Zero;
+                return CustomQueryInterfaceResult.NotHandled;
+            }
+
+            private sealed class CommandTargetHandler : IOleCommandTarget
+            {
+                public int QueryStatus(IntPtr pguidCmdGroup, uint cCmds, IntPtr prgCmds, IntPtr pCmdText)
+                {
+                    return OLECMDERR_E_UNKNOWNGROUP;
+                }
+
+                public int Exec(IntPtr pguidCmdGroup, uint nCmdID, uint nCmdexecopt, IntPtr pvaIn, IntPtr pvaOut)
+                {
+                    try
                     {
-                        if (nCmdID == OLECMDID_SHOWSCRIPTERROR)
+                        if (pguidCmdGroup != IntPtr.Zero)
                         {
-                            // Return S_OK (0) to tell MSHTML that the script error was handled and suppress the dialog!
-                            return 0;
+                            Guid cmdGroup = (Guid)Marshal.PtrToStructure(pguidCmdGroup, typeof(Guid));
+                            if (cmdGroup == CGID_DocHostCommandHandler && nCmdID == OLECMDID_SHOWSCRIPTERROR)
+                            {
+                                // Tell MSHTML to continue running scripts and suppress the script error dialog.
+                                if (pvaOut != IntPtr.Zero)
+                                {
+                                    Marshal.GetNativeVariantForObject(true, pvaOut);
+                                }
+                                return 0;
+                            }
                         }
                     }
+                    catch
+                    {
+                    }
+                    return OLECMDERR_E_UNKNOWNGROUP;
                 }
-                catch
-                {
-                }
-                return OLECMDERR_E_UNKNOWNGROUP;
             }
 
             public int ShowMessage(IntPtr hwnd, string lpstrText, string lpstrCaption, uint dwType, string lpstrHelpFile, uint dwHelpContext, out int lpResult)
@@ -295,10 +320,10 @@ namespace EBSBrowser
     public interface IOleCommandTarget
     {
         [PreserveSig]
-        int QueryStatus([In] ref Guid pguidCmdGroup, [In] uint cCmds, [In, Out] IntPtr prgCmds, [In, Out] IntPtr pCmdText);
+        int QueryStatus(IntPtr pguidCmdGroup, [In] uint cCmds, [In, Out] IntPtr prgCmds, [In, Out] IntPtr pCmdText);
 
         [PreserveSig]
-        int Exec([In] ref Guid pguidCmdGroup, [In] uint nCmdID, [In] uint nCmdexecopt, [In] IntPtr pvaIn, [In, Out] IntPtr pvaOut);
+        int Exec(IntPtr pguidCmdGroup, [In] uint nCmdID, [In] uint nCmdexecopt, [In] IntPtr pvaIn, [In, Out] IntPtr pvaOut);
     }
 
     [ComImport, Guid("c4d244b0-d43e-11cf-893b-00aa00bdce1a"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]

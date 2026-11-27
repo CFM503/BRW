@@ -14,6 +14,10 @@ namespace EBSBrowser
         public string SavedPasswordCipher { get; set; }
         /// <summary>Allow SessionGuard to auto-click 【是】 and auto-submit the re-login page once the session is confirmed expired.</summary>
         public bool AutoRescue { get; set; }
+        /// <summary>Send lightweight same-origin keep-alive pings to all open http/https tabs.</summary>
+        public bool KeepAliveAllTabs { get; set; }
+        /// <summary>Comma-separated custom domains/keywords for tab keep-alive when KeepAliveAllTabs is false.</summary>
+        public string KeepAliveDomains { get; set; }
 
         public AppConfig()
         {
@@ -25,6 +29,8 @@ namespace EBSBrowser
             SavedUsername = "";
             SavedPasswordCipher = "";
             AutoRescue = true;
+            KeepAliveAllTabs = true;
+            KeepAliveDomains = "";
         }
     }
 
@@ -106,6 +112,18 @@ namespace EBSBrowser
                                     config.AutoRescue = ar;
                                 }
                             }
+                            else if (key.Equals("KeepAliveAllTabs", StringComparison.OrdinalIgnoreCase))
+                            {
+                                bool kat;
+                                if (bool.TryParse(val, out kat))
+                                {
+                                    config.KeepAliveAllTabs = kat;
+                                }
+                            }
+                            else if (key.Equals("KeepAliveDomains", StringComparison.OrdinalIgnoreCase))
+                            {
+                                config.KeepAliveDomains = val;
+                            }
                         }
                     }
                 }
@@ -138,7 +156,9 @@ namespace EBSBrowser
                                  "AutoFillLogin=" + config.AutoFillLogin.ToString().ToLower() + "\r\n" +
                                  "SavedUsername=" + SanitizeLineValue(config.SavedUsername) + "\r\n" +
                                  "SavedPasswordCipher=" + SanitizeLineValue(config.SavedPasswordCipher) + "\r\n" +
-                                 "AutoRescue=" + config.AutoRescue.ToString().ToLower() + "\r\n";
+                                 "AutoRescue=" + config.AutoRescue.ToString().ToLower() + "\r\n" +
+                                 "KeepAliveAllTabs=" + config.KeepAliveAllTabs.ToString().ToLower() + "\r\n" +
+                                 "KeepAliveDomains=" + SanitizeLineValue(config.KeepAliveDomains) + "\r\n";
                 File.WriteAllText(ConfigPath, content, System.Text.Encoding.UTF8);
             }
             catch

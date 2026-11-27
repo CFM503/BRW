@@ -6,7 +6,7 @@ namespace EBSBrowser
 {
     public class MainForm : Form
     {
-        public const string AppVersion = "1.1.1";
+        public const string AppVersion = "1.1.2";
         private AppConfig config;
         private TabControl tabControl;
 
@@ -33,6 +33,7 @@ namespace EBSBrowser
         private int currentZoom = 100;
         private Timer keepAliveTimer;
         private bool isKeepAliveEnabled = true;
+        private readonly System.Collections.Generic.Dictionary<TabPage, bool> tabKeepAliveOverrides = new System.Collections.Generic.Dictionary<TabPage, bool>();
         private NotifyIcon trayIcon;
         private Font boldTabFont;
 
@@ -603,6 +604,7 @@ namespace EBSBrowser
             }
             else
             {
+                tabKeepAliveOverrides.Remove(page);
                 tabControl.TabPages.Remove(page);
                 if (b != null)
                 {
@@ -668,7 +670,47 @@ namespace EBSBrowser
                     CloseTab(tabControl.TabPages[i], true);
                     return;
                 }
+                // Right click on tab header -> context menu
+                if (e.Button == MouseButtons.Right && r.Contains(e.Location))
+                {
+                    ShowTabContextMenu(tabControl.TabPages[i], e.Location);
+                    return;
+                }
             }
+        }
+
+        private void ShowTabContextMenu(TabPage page, Point location)
+        {
+            if (page == null) return;
+            ExtendedWebBrowser browser = page.Tag as ExtendedWebBrowser;
+            bool currentlyAlive = ShouldKeepTabAlive(page, browser);
+
+            ContextMenuStrip menu = new ContextMenuStrip();
+            ToolStripMenuItem miKeepAlive = new ToolStripMenuItem("⚡ 此页签保持在线（防超时）");
+            miKeepAlive.Checked = currentlyAlive;
+            miKeepAlive.Click += delegate
+            {
+                tabKeepAliveOverrides[page] = !currentlyAlive;
+            };
+
+            ToolStripMenuItem miRefresh = new ToolStripMenuItem("🔄 刷新此页签");
+            miRefresh.Click += delegate
+            {
+                if (browser != null && !browser.IsDisposed) browser.Refresh();
+            };
+
+            ToolStripMenuItem miClose = new ToolStripMenuItem("❌ 关闭此页签");
+            miClose.Click += delegate
+            {
+                CloseTab(page, true);
+            };
+
+            menu.Items.Add(miKeepAlive);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(miRefresh);
+            menu.Items.Add(miClose);
+            menu.Closed += delegate { menu.Dispose(); };
+            menu.Show(tabControl, location);
         }
 
         private void TabControl_SelectedIndexChanged(object sender, EventArgs e)
@@ -889,7 +931,7 @@ namespace EBSBrowser
                 foreach (TabPage page in tabControl.TabPages)
                 {
                     ExtendedWebBrowser b = page.Tag as ExtendedWebBrowser;
-                    if (b != null && ExecuteKeepAlivePing(b))
+                    if (b != null && ExecuteKeepAlivePing(page, b))
                     {
                         pingedTabs++;
                     }
@@ -903,40 +945,100 @@ namespace EBSBrowser
             }
         }
 
-        private bool ExecuteKeepAlivePing(ExtendedWebBrowser targetBrowser)
+        private static bool IsEbsOrPortalUri(Uri u)
+        {
+            if (u == null) return false;
+            string host = u.Host ?? "";
+            string abs = u.AbsoluteUri ?? "";
+            return host.IndexOf("ebs.", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   host.IndexOf("portal.", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   abs.IndexOf("chinagas", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   abs.IndexOf("/OA_HTML/", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   abs.IndexOf("/forms/", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private bool MatchesCustomKeepAliveDomain(Uri u)
+        {
+            if (u == null || string.IsNullOrEmpty(config.KeepAliveDomains)) return false;
+            string[] patterns = config.KeepAliveDomains.Split(new char[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            string abs = u.AbsoluteUri ?? "";
+            string host = u.Host ?? "";
+            foreach (string raw in patterns)
+            {
+                string p = raw.Trim();
+                if (string.IsNullOrEmpty(p)) continue;
+                if (host.IndexOf(p, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    abs.IndexOf(p, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private bool ShouldKeepTabAlive(TabPage page, ExtendedWebBrowser targetBrowser)
+        {
+            if (targetBrowser == null || targetBrowser.IsDisposed || targetBrowser.Url == null) return false;
+            Uri u = targetBrowser.Url;
+            if (u.Scheme != Uri.UriSchemeHttp && u.Scheme != Uri.UriSchemeHttps) return false;
+
+            bool manualOverride;
+            if (page != null && tabKeepAliveOverrides.TryGetValue(page, out manualOverride))
+            {
+                return manualOverride;
+            }
+
+            if (config.KeepAliveAllTabs) return true;
+            if (IsEbsOrPortalUri(u)) return true;
+            return MatchesCustomKeepAliveDomain(u);
+        }
+
+        private bool ExecuteKeepAlivePing(TabPage page, ExtendedWebBrowser targetBrowser)
         {
             try
             {
-                if (targetBrowser != null && targetBrowser.Document != null && targetBrowser.Url != null)
+                if (!ShouldKeepTabAlive(page, targetBrowser) || targetBrowser.Document == null)
                 {
-                    // Send dynamic XHR request to OA.jsp to refresh ICX_SESSIONS.LAST_CONNECT in Oracle database
-                    string script = "(function(){" +
-                        "try{" +
-                        "  var host = window.location.protocol + '//' + window.location.host;" +
-                        "  var href = window.location.href;" +
-                        "  if(host.indexOf('ebs.') !== -1 || href.indexOf('/OA_HTML/') !== -1 || href.indexOf('/forms/') !== -1){" +
-                        "    var xhr = new XMLHttpRequest();" +
-                        "    xhr.open('GET', host + '/OA_HTML/OA.jsp?OAFunc=OANEWHOMEPAGE&_ka=' + (new Date()).getTime(), true);" +
-                        "    xhr.withCredentials = true;" +
-                        "    xhr.send(null);" +
-                        "    var img = new Image();" +
-                        "    img.src = host + '/OA_HTML/cabo/images/skyros/t.gif?_t=' + (new Date()).getTime();" +
-                        "  }" +
-                        "  if(host.indexOf('portal.') !== -1 || href.indexOf('chinagas') !== -1){" +
-                        "    var xhr2 = new XMLHttpRequest();" +
-                        "    xhr2.open('GET', host + '/group/frontend?_ka=' + (new Date()).getTime(), true);" +
-                        "    xhr2.withCredentials = true;" +
-                        "    xhr2.send(null);" +
-                        "    var xhr3 = new XMLHttpRequest();" +
-                        "    xhr3.open('GET', host + '/c/portal/extend_session?_t=' + (new Date()).getTime(), true);" +
-                        "    xhr3.withCredentials = true;" +
-                        "    xhr3.send(null);" +
-                        "  }" +
-                        "}catch(e){}" +
-                        "})();";
-                    targetBrowser.Document.InvokeScript("eval", new object[] { script });
-                    return true;
+                    return false;
                 }
+
+                // Send dynamic XHR request to refresh EBS / portal / general web sessions
+                string script = "(function(){" +
+                    "try{" +
+                    "  var host = window.location.protocol + '//' + window.location.host;" +
+                    "  var href = window.location.href;" +
+                    "  var isEbs = (host.indexOf('ebs.') !== -1 || href.indexOf('/OA_HTML/') !== -1 || href.indexOf('/forms/') !== -1);" +
+                    "  var isPortal = (host.indexOf('portal.') !== -1 || href.indexOf('chinagas') !== -1);" +
+                    "  if(isEbs){" +
+                    "    var xhr = new XMLHttpRequest();" +
+                    "    xhr.open('GET', host + '/OA_HTML/OA.jsp?OAFunc=OANEWHOMEPAGE&_ka=' + (new Date()).getTime(), true);" +
+                    "    xhr.withCredentials = true;" +
+                    "    xhr.send(null);" +
+                    "    var img = new Image();" +
+                    "    img.src = host + '/OA_HTML/cabo/images/skyros/t.gif?_t=' + (new Date()).getTime();" +
+                    "  }" +
+                    "  if(isPortal){" +
+                    "    var xhr2 = new XMLHttpRequest();" +
+                    "    xhr2.open('GET', host + '/group/frontend?_ka=' + (new Date()).getTime(), true);" +
+                    "    xhr2.withCredentials = true;" +
+                    "    xhr2.send(null);" +
+                    "    var xhr3 = new XMLHttpRequest();" +
+                    "    xhr3.open('GET', host + '/c/portal/extend_session?_t=' + (new Date()).getTime(), true);" +
+                    "    xhr3.withCredentials = true;" +
+                    "    xhr3.send(null);" +
+                    "  }" +
+                    "  if(!isEbs && !isPortal && (window.location.protocol === 'http:' || window.location.protocol === 'https:')){" +
+                    "    var sep = href.indexOf('?') === -1 ? '?' : '&';" +
+                    "    var pingUrl = href.split('#')[0] + sep + '_ka=' + (new Date()).getTime();" +
+                    "    var xhrGen = new XMLHttpRequest();" +
+                    "    xhrGen.open('HEAD', pingUrl, true);" +
+                    "    xhrGen.withCredentials = true;" +
+                    "    xhrGen.send(null);" +
+                    "  }" +
+                    "}catch(e){}" +
+                    "})();";
+                targetBrowser.Document.InvokeScript("eval", new object[] { script });
+                return true;
             }
             catch
             {
