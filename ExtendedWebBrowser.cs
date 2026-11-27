@@ -151,7 +151,7 @@ namespace EBSBrowser
 
         protected class CustomWebBrowserSite : WebBrowserSite, IDocHostShowUI, ICustomQueryInterface
         {
-            private static readonly Guid IID_IOleCommandTarget = new Guid("b722be7f-4eb0-11b0-b59b-0000f805f530");
+            private static readonly Guid IID_IOleCommandTarget = new Guid("b722bccb-4e68-101b-a2bc-00aa00404770");
             private static readonly Guid CGID_DocHostCommandHandler = new Guid("f38bc242-b950-11d1-8918-00c04fc2c836");
             private const int OLECMDID_SHOWSCRIPTERROR = 40;
             private const int OLECMDERR_E_UNKNOWNGROUP = -2147221248;
@@ -316,7 +316,7 @@ namespace EBSBrowser
 
     #region COM Interfaces and Event Sink
 
-    [ComImport, Guid("b722be7f-4eb0-11b0-b59b-0000f805f530"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    [ComImport, Guid("b722bccb-4e68-101b-a2bc-00aa00404770"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IOleCommandTarget
     {
         [PreserveSig]

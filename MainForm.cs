@@ -6,7 +6,7 @@ namespace EBSBrowser
 {
     public class MainForm : Form
     {
-        public const string AppVersion = "1.1.2";
+        public const string AppVersion = "1.1.3";
         private AppConfig config;
         private TabControl tabControl;
 
@@ -401,6 +401,41 @@ namespace EBSBrowser
 
                 // Attempt auto-filling saved login credentials
                 TryAutoFillCredentials(b);
+
+                // Auto-close orphan tabs that were only opened to trigger an EBS/file download (e.g. FNDWRR.exe)
+                // and ended up on IE's "导航已取消" (navcancl.htm) page.
+                string completedUrl = args.Url != null ? args.Url.ToString() : "";
+                string docTitleNow = b.DocumentTitle ?? "";
+                bool isNavCanceled =
+                    docTitleNow == "导航已取消" ||
+                    docTitleNow == "Navigation Canceled" ||
+                    completedUrl.IndexOf("navcancl.htm", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                if (isNavCanceled && page != tabControl.TabPages[0] && tabControl.TabPages.Count > 1 && !b.CanGoBack)
+                {
+                    Timer closeTimer = new Timer();
+                    closeTimer.Interval = 600;
+                    closeTimer.Tick += delegate
+                    {
+                        closeTimer.Stop();
+                        closeTimer.Dispose();
+                        try
+                        {
+                            if (!b.IsDisposed && tabControl.TabPages.Contains(page) &&
+                                page != tabControl.TabPages[0] && tabControl.TabPages.Count > 1 && !b.CanGoBack)
+                            {
+                                string curTitle = b.DocumentTitle ?? "";
+                                if (curTitle == "导航已取消" || curTitle == "Navigation Canceled")
+                                {
+                                    NativeMethods.Log("TabCleanup", "Auto-closed canceled download tab: " + (b.Url != null ? b.Url.ToString() : ""));
+                                    CloseTab(page, false);
+                                }
+                            }
+                        }
+                        catch {}
+                    };
+                    closeTimer.Start();
+                }
             };
 
             b.DocumentTitleChanged += delegate(object s, EventArgs args)
